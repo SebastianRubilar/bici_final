@@ -1,0 +1,1329 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════════════════════
+let NOTA_MIN=4.0,PROM_PRECAUCION=5.0;const N_UNIDADES=5;
+const MATERIAS=["Ciencias","Historia","Inglés","Lenguaje","Matemática"];
+const MAT_MAP={ciencias:"Ciencias",historia:"Historia",ingles:"Inglés",lenguaje:"Lenguaje",matematica:"Matemática"};
+const MAT_CSS={Ciencias:"m-ci",Historia:"m-hi",Inglés:"m-in",Lenguaje:"m-le",Matemática:"m-ma"};
+const ESTADOS_PENDIENTES=new Set(["NR","PE","C"]);
+
+function normStr(s){return String(s||"").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/\s+/g," ");}
+function keyAl(a){return normStr(a.Apellidos)+"||"+normStr(a.Nombre);}
+function esNota(v){return typeof v==="number"&&!isNaN(v);}
+function esPendiente(v){return typeof v==="string"&&ESTADOS_PENDIENTES.has(v.trim().toUpperCase());}
+function detectMateria(name){const n=name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");for(const[k,v]of Object.entries(MAT_MAP))if(n.includes(k))return v;return null;}
+function notaClass(n){if(!esNota(n))return"n-gray";if(n>=5)return"n-verde";if(n>=NOTA_MIN)return"n-amar";return"n-rojo";}
+function estadoClass(r){if(r>=2)return["🔴 Crítico","e-crit"];if(r>=1)return["🟡 En riesgo","e-warn"];return["🟢 Al día","e-ok"];}
+function show(el){el.classList.add("show");}
+function hide(el){el.classList.remove("show");}
+function mostrarToast(msg){const t=document.getElementById("toast");t.textContent=msg;t.classList.add("show");setTimeout(()=>t.classList.remove("show"),3000);}
+
+// ─── NAVEGACIÓN ───────────────────────────────────────────────────────────────
+function cambiarPagina(id,btn){
+  document.querySelectorAll(".page-tab").forEach(b=>b.classList.remove("active"));
+  document.querySelectorAll(".page-content").forEach(p=>p.classList.remove("active"));
+  btn.classList.add("active");
+  document.getElementById("page-"+id).classList.add("active");
+}
+function cambiarUnidad(n,btn){
+  document.querySelectorAll(".unit-tab").forEach(b=>b.classList.remove("active"));
+  document.querySelectorAll(".unit-content").forEach(p=>p.classList.remove("active"));
+  btn.classList.add("active");
+  document.getElementById("unit-"+n).classList.add("active");
+}
+
+// ─── UNIDADES 1-5 ────────────────────────────────────────────────────────────
+const unitData={};
+for(let u=1;u<=N_UNIDADES;u++)unitData[u]={files:[],parsedData:{},allStudents:[]};
+
+function buildUnidades(){
+  const container=document.getElementById("unidades-container");
+  for(let u=1;u<=N_UNIDADES;u++){
+    const div=document.createElement("div");
+    div.id="unit-"+u;div.className="unit-content"+(u===1?" active":"");
+    div.innerHTML=`
+      <div class="card"><div class="card-header"><div class="step">${u}</div><h2>Unidad ${u} — Sube los XLS de Alexia</h2></div>
+      <div class="card-body">
+        <div class="drop-zone" id="dz${u}"><input type="file" id="xi${u}" accept=".xls,.xlsx" multiple/>
+          <span class="drop-icon">📊</span>
+          <p><strong>Arrastra aquí los archivos XLS</strong> o haz clic para seleccionar</p>
+          <p style="margin-top:.3rem;font-size:.8rem">Un archivo por materia — Unidad ${u}</p></div>
+        <div class="file-list" id="fl${u}"></div><div class="pills" id="pl${u}"></div>
+      </div></div>
+      <div class="card"><div class="card-header"><div class="step">⚙</div><h2>Genera el Excel de seguimiento — Unidad ${u}</h2></div>
+      <div class="card-body">
+        <p style="font-size:.88rem;color:var(--muted);margin-bottom:.9rem">Resumen semáforo · Detalle por materia · Estudiantes en riesgo · Estadísticas</p>
+        <button class="btn" id="gb${u}" disabled>⚙️ Generar y descargar Excel</button>
+        <div class="status loading" id="sl${u}"><div class="spinner"></div>Procesando…</div>
+        <div class="status success" id="so${u}">✅ ¡Excel descargado!</div>
+        <div class="status error" id="se${u}">❌ <span id="et${u}"></span></div>
+      </div></div>
+      <div class="preview-section" id="ps${u}">
+        <div class="preview-title">Vista previa — Unidad ${u}</div>
+        <div class="tabs-row" id="tr${u}"></div>
+        <div class="tbl-wrap"><table id="pt${u}"><thead id="th${u}"></thead><tbody id="tb${u}"></tbody></table></div>
+      </div>
+      <div class="info-box"><strong>¿Cómo exportar desde Alexia Familia?</strong><br/>Notas → Selecciona curso y Unidad ${u} → Exportar → Excel (.xls)<br/>Exporta <strong>un archivo por materia</strong> (ej: <em>Matemática_Unidad${u}.xls</em>).</div>`;
+    container.appendChild(div);
+    bindUnit(u);
+  }
+}
+
+function bindUnit(u){
+  const dz=document.getElementById("dz"+u),xi=document.getElementById("xi"+u);
+  dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("drag-over");});
+  dz.addEventListener("dragleave",()=>dz.classList.remove("drag-over"));
+  dz.addEventListener("drop",e=>{e.preventDefault();dz.classList.remove("drag-over");addFilesUnit(u,[...e.dataTransfer.files]);});
+  xi.addEventListener("change",()=>{addFilesUnit(u,[...xi.files]);xi.value="";});
+  document.getElementById("gb"+u).addEventListener("click",()=>generarUnidad(u));
+}
+window.removeFileUnit=(u,idx)=>{unitData[u].files.splice(idx,1);renderFilesUnit(u);};
+
+function addFilesUnit(u,nf){
+  nf.forEach(f=>{if(!f.name.match(/\.xlsx?$/i)||unitData[u].files.some(x=>x.name===f.name))return;unitData[u].files.push(f);});
+  renderFilesUnit(u);
+}
+function renderFilesUnit(u){
+  const fl=document.getElementById("fl"+u),pl=document.getElementById("pl"+u),gb=document.getElementById("gb"+u),files=unitData[u].files;
+  fl.innerHTML=files.map((f,i)=>{const m=detectMateria(f.name),css=m?(MAT_CSS[m]||"m-xx"):"m-xx";
+    return `<div class="file-item"><span>📄</span><span>${f.name}</span><span class="file-mat ${css}">${m||"Desconocida"}</span><button class="rm-btn" onclick="removeFileUnit(${u},${i})">✕</button></div>`;}).join("");
+  const det=files.map(f=>detectMateria(f.name)).filter(Boolean),falt=MATERIAS.filter(m=>!det.includes(m));
+  pl.innerHTML="";
+  if(files.length){pl.innerHTML+=`<span class="pill p-ok">✅ ${files.length} archivo${files.length>1?"s":""} cargado${files.length>1?"s":""}</span>`;
+    if(falt.length)pl.innerHTML+=`<span class="pill p-warn">⚠️ Faltan: ${falt.join(", ")}</span>`;
+    else pl.innerHTML+=`<span class="pill p-ok">✅ Todas las materias presentes</span>`;}
+  gb.disabled=files.length===0;
+  hide(document.getElementById("sl"+u));hide(document.getElementById("so"+u));hide(document.getElementById("se"+u));
+  document.getElementById("ps"+u).classList.remove("show");
+}
+
+// ─── PARSER XLS ───────────────────────────────────────────────────────────────
+function parseXLS(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const wb=XLSX.read(e.target.result,{type:"binary"});
+        const sh=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:""});
+        let materia=null;
+        for(let i=0;i<8;i++){const r=rows[i]||[];for(let j=0;j<r.length-1;j++){if(String(r[j]).trim()==="Materia")materia=String(r[j+1]).trim();}}
+        if(!materia)materia=detectMateria(file.name)||"Desconocida";
+        let headerRow=-1;
+        for(let i=0;i<rows.length;i++){if(rows[i].includes("Apellidos")){headerRow=i;break;}}
+        if(headerRow<0)return reject(new Error("No se encontró cabecera en "+file.name));
+        const headers=rows[headerRow];
+        const iSeccion=headers.findIndex(h=>String(h).trim()==="Sección");
+        const skip=new Set(["","GuidMatricula","Sección","Núm"]);
+        const colMap={};
+        headers.forEach((h,j)=>{if(!skip.has(String(h).trim()))colMap[String(h).trim()]=j;});
+        const iObsHdr=headers.findIndex(h=>String(h).trim().toLowerCase()==="observaciones");
+        const alumnos=[];
+        for(let i=headerRow+1;i<rows.length;i++){
+          const row=rows[i];
+          const guid=String(row[1]||"").trim();
+          if(!guid||!guid.includes("ab00"))continue;
+          const apellidos=String(row[4]||"").trim();
+          if(!apellidos)continue;
+          const seccion=iSeccion>=0?String(row[iSeccion]||"").trim():String(row[2]||"").trim();
+          const alumno={Num:parseInt(row[3])||0,Apellidos:apellidos,Nombre:String(row[5]||"").trim(),Seccion:seccion};
+          for(const[col,j]of Object.entries(colMap)){
+            if(col==="Apellidos"||col==="Nombre")continue;
+            const raw=row[j];
+            if(typeof raw==="number")alumno[col]=Math.round(raw*10)/10;
+            else{const s=String(raw||"").trim();alumno[col]=s||null;}
+          }
+          if(iObsHdr>=0){const obsRaw=String(row[iObsHdr]||"").trim();alumno.Observaciones=obsRaw||null;}
+          alumnos.push(alumno);
+        }
+        resolve({materia,alumnos});
+      }catch(err){reject(err);}
+    };
+    reader.onerror=reject;
+    reader.readAsBinaryString(file);
+  });
+}
+
+// ─── GENERAR EXCEL UNIDAD ────────────────────────────────────────────────────
+async function generarUnidad(u){
+  const sl=document.getElementById("sl"+u),so=document.getElementById("so"+u),se=document.getElementById("se"+u),gb=document.getElementById("gb"+u);
+  hide(sl);hide(so);hide(se);show(sl);gb.disabled=true;
+  const ud=unitData[u];ud.parsedData={};ud.allStudents=[];
+  try{
+    for(const f of ud.files){const{materia,alumnos}=await parseXLS(f);ud.parsedData[materia]={alumnos};}
+    const primera=Object.keys(ud.parsedData)[0];
+    ud.allStudents=[...ud.parsedData[primera].alumnos].sort((a,b)=>a.Apellidos.localeCompare(b.Apellidos));
+    const materias=Object.keys(ud.parsedData);
+    const wb=XLSX.utils.book_new();
+    // Hoja Resumen
+    const resH=["N°","Apellidos","Nombre","Sección",...materias.map(m=>m+" (Final)"),"Promedio Gral.","Mat. Aprobadas","Mat. Reprobadas","Estado"];
+    const resR=ud.allStudents.map(al=>{
+      const notasFin=[],rowArr=[al.Num,al.Apellidos,al.Nombre,al.Seccion||""];
+      for(const mat of materias){const found=(ud.parsedData[mat]?.alumnos||[]).find(a=>keyAl(a)===keyAl(al));const n=found?.Final??null;
+        if(esNota(n)){rowArr.push(n);notasFin.push(n);}else if(esPendiente(n))rowArr.push(String(n).trim().toUpperCase());else rowArr.push("–");}
+      const prom=notasFin.length?+(notasFin.reduce((s,x)=>s+x,0)/notasFin.length).toFixed(1):null;
+      const apro=notasFin.filter(n=>n>=NOTA_MIN).length,repo=notasFin.filter(n=>n<NOTA_MIN).length;
+      const estado=repo>=2?"🔴 CRÍTICO":repo>=1?"🟡 EN RIESGO":"🟢 AL DÍA";
+      rowArr.push(prom??"-",apro,repo,estado);return rowArr;});
+    const wsRes=XLSX.utils.aoa_to_sheet([resH,...resR]);wsRes["!cols"]=[4,22,18,10,...materias.map(()=>12),10,8,8,14].map(w=>({wch:w}));
+    XLSX.utils.book_append_sheet(wb,wsRes,"📊 Resumen General");
+    // Hoja En Riesgo
+    const rH=["N°","Apellidos","Nombre","Sección","Materia","Nota Final","Tipo Alerta","Mat. Reprobadas","Promedio Gral.","Acción Sugerida"];
+    const rR=[];
+    for(const al of ud.allStudents){
+      const notasNum=[],problemas=[];
+      for(const mat of materias){const found=(ud.parsedData[mat]?.alumnos||[]).find(a=>keyAl(a)===keyAl(al));const f=found?.Final??null;
+        if(esNota(f)){notasNum.push(f);if(f<NOTA_MIN)problemas.push([mat,f,"Reprobado"]);}}
+      if(!problemas.length)continue;
+      const prom=notasNum.length?+(notasNum.reduce((s,x)=>s+x,0)/notasNum.length).toFixed(1):"-";
+      const nRep=notasNum.filter(n=>n<NOTA_MIN).length;
+      const accion=nRep>=2?"⚠️ Contactar apoderado urgente":nRep>=1?"📚 Reforzamiento docente":"👁 Monitorear";
+      for(const[mat,nota,tipo]of problemas)rR.push([al.Num,al.Apellidos,al.Nombre,al.Seccion||"",mat,nota,tipo,nRep,prom,accion]);
+    }
+    const wsR=XLSX.utils.aoa_to_sheet([rH,...rR]);wsR["!cols"]=[4,22,18,10,14,10,14,10,10,34].map(w=>({wch:w}));
+    XLSX.utils.book_append_sheet(wb,wsR,"🔴 En Riesgo");
+    // Hojas por materia
+    for(const mat of materias){
+      const sample=ud.parsedData[mat].alumnos[0]||{};
+      const ctrlCols=Object.keys(sample).filter(k=>!["Num","Apellidos","Nombre","Seccion","Final","Recuperacion","Observaciones"].includes(k));
+      const matH=["N°","Apellidos","Nombre","Sección",...ctrlCols,"Nota Final","Recuperación","Promedio Controles","Observaciones"];
+      const alOrden=[...ud.parsedData[mat].alumnos].sort((a,b)=>{
+        const ia=ud.allStudents.findIndex(x=>x.Apellidos===a.Apellidos&&x.Nombre===a.Nombre);
+        const ib=ud.allStudents.findIndex(x=>x.Apellidos===b.Apellidos&&x.Nombre===b.Nombre);return ia-ib;});
+      const matR=alOrden.map(al=>{
+        const base=[al.Num,al.Apellidos,al.Nombre,al.Seccion||""],ctrlNotas=[];
+        for(const c of ctrlCols){const v=al[c];if(esNota(v)){base.push(v);ctrlNotas.push(v);}else if(esPendiente(v))base.push(String(v).trim().toUpperCase());else base.push("–");}
+        const fin=al.Final??null,prom=ctrlNotas.length?+(ctrlNotas.reduce((s,x)=>s+x,0)/ctrlNotas.length).toFixed(1):null;
+        const finVal=esNota(fin)?fin:(esPendiente(fin)?String(fin).trim().toUpperCase():"–");
+        base.push(finVal,al.Recuperacion||"–",prom??"-",al.Observaciones||"");return base;});
+      const wsM=XLSX.utils.aoa_to_sheet([matH,...matR]);wsM["!cols"]=[4,22,18,10,...ctrlCols.map(()=>10),10,10,12,30].map(w=>({wch:w}));
+      XLSX.utils.book_append_sheet(wb,wsM,("📚 "+mat).slice(0,31));
+    }
+    // Hoja Estadísticas
+    const sH=["Materia","Promedio","Nota Máx","Nota Mín","Aprobados","Reprobados","% Aprobación","Estado"];
+    const sR=materias.map(mat=>{
+      const notas=(ud.parsedData[mat]?.alumnos||[]).map(a=>a.Final).filter(n=>typeof n==="number");
+      if(!notas.length)return[mat,"-","-","-","-","-","-","Sin datos"];
+      const prom=+(notas.reduce((s,x)=>s+x,0)/notas.length).toFixed(2);
+      const apro=notas.filter(n=>n>=NOTA_MIN).length,repo=notas.filter(n=>n<NOTA_MIN).length;
+      const pct=+(apro/notas.length*100).toFixed(1);
+      return[mat,prom,Math.max(...notas),Math.min(...notas),apro,repo,pct+"%",pct>=80?"✅ Bien":pct>=60?"⚠️ Atención":"❌ Crítico"];});
+    const wsS=XLSX.utils.aoa_to_sheet([sH,...sR]);wsS["!cols"]=[20,10,10,10,10,10,14,14].map(w=>({wch:w}));
+    XLSX.utils.book_append_sheet(wb,wsS,"📈 Estadísticas");
+    XLSX.writeFile(wb,"Seguimiento_CDAR_U"+u+"_"+Date.now()+".xlsx");
+    renderPreviewUnidad(u,materias);hide(sl);show(so);
+  }catch(err){hide(sl);document.getElementById("et"+u).textContent=err.message;show(se);}
+  finally{gb.disabled=false;}
+}
+
+function renderPreviewUnidad(u,materias){
+  const sec=document.getElementById("ps"+u),tabsRow=document.getElementById("tr"+u);
+  sec.classList.add("show");
+  const ud=unitData[u],tabs=["Resumen",...materias,"En Riesgo"];
+  tabsRow.innerHTML=tabs.map((t,i)=>`<button class="tab-btn${i===0?" active":""}" onclick="showTabU(${u},'${t}',this)">${t}</button>`).join("");
+  showTabU(u,"Resumen",tabsRow.querySelector(".tab-btn.active"));
+}
+function showTabU(u,tab,btn){
+  document.querySelectorAll("#tr"+u+" .tab-btn").forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+  const thead=document.getElementById("th"+u),tbody=document.getElementById("tb"+u),ud=unitData[u];
+  if(tab==="Resumen"){
+    const materias=Object.keys(ud.parsedData);
+    thead.innerHTML=`<tr><th>N°</th><th>Apellidos / Nombre</th><th>Sección</th>${materias.map(m=>"<th>"+m+"</th>").join("")}<th>Promedio</th><th>Estado</th></tr>`;
+    tbody.innerHTML=ud.allStudents.map(al=>{
+      const notasFin=[],celdas=materias.map(mat=>{
+        const found=(ud.parsedData[mat]?.alumnos||[]).find(a=>keyAl(a)===keyAl(al));const n=found?.Final??null;
+        if(esNota(n))notasFin.push(n);const cls=esNota(n)?notaClass(n):"n-gray";const val=esNota(n)?n.toFixed(1):(esPendiente(n)?String(n).trim().toUpperCase():"–");
+        return "<td><span class=\"nota "+cls+"\">"+val+"</span></td>";}).join("");
+      const prom=notasFin.length?+(notasFin.reduce((s,x)=>s+x,0)/notasFin.length).toFixed(1):null;
+      const repo=notasFin.filter(n=>n<NOTA_MIN).length;const[estTxt,estCls]=estadoClass(repo);
+      const secBadge=al.Seccion?"<span class=\"badge-seccion\">"+al.Seccion+"</span>":"";
+      return "<tr><td>"+al.Num+"</td><td><strong>"+al.Apellidos+"</strong><br><span style=\"color:var(--muted);font-size:.78rem\">"+al.Nombre+"</span></td><td>"+secBadge+"</td>"+celdas+"<td><span class=\"nota "+notaClass(prom)+"\">"+( prom??"-")+"</span></td><td><span class=\"estado "+estCls+"\">"+estTxt+"</span></td></tr>";}).join("");
+  }else if(tab==="En Riesgo"){
+    thead.innerHTML="<tr><th>Apellidos / Nombre</th><th>Sección</th><th>Materia</th><th>Nota Final</th><th>Acción</th></tr>";
+    const materias=Object.keys(ud.parsedData);let rows="";
+    for(const al of ud.allStudents){
+      const notasNum=[],problemas=[];
+      for(const mat of materias){const found=(ud.parsedData[mat]?.alumnos||[]).find(a=>keyAl(a)===keyAl(al));const f=found?.Final??null;if(esNota(f)){notasNum.push(f);if(f<NOTA_MIN)problemas.push([mat,f]);}}
+      if(!problemas.length)continue;const nRep=notasNum.filter(n=>n<NOTA_MIN).length;
+      const accion=nRep>=2?"Contactar apoderado":nRep>=1?"Reforzamiento":"Monitorear";
+      const secBadge=al.Seccion?"<span class=\"badge-seccion\">"+al.Seccion+"</span>":"";
+      for(const[mat,nota]of problemas)rows+="<tr><td><strong>"+al.Apellidos+"</strong><br><span style=\"color:var(--muted);font-size:.78rem\">"+al.Nombre+"</span></td><td>"+secBadge+"</td><td>"+mat+"</td><td><span class=\"nota "+notaClass(nota)+"\">"+nota.toFixed(1)+"</span></td><td style=\"font-size:.78rem;color:var(--muted)\">"+accion+"</td></tr>";
+    }
+    tbody.innerHTML=rows||"<tr><td colspan=\"5\" style=\"text-align:center;padding:1.5rem;color:var(--green)\">✅ No hay estudiantes en riesgo</td></tr>";
+  }else{
+    const data=ud.parsedData[tab];if(!data)return;
+    const sample=data.alumnos[0]||{};const ctrl=Object.keys(sample).filter(k=>!["Num","Apellidos","Nombre","Seccion","Final","Recuperacion","Observaciones"].includes(k));
+    thead.innerHTML="<tr><th>N°</th><th>Apellidos / Nombre</th><th>Sección</th>"+ctrl.map(c=>"<th>"+c+"</th>").join("")+"<th>Final</th><th>Prom. Controles</th></tr>";
+    const alOrden=[...data.alumnos].sort((a,b)=>{const ia=ud.allStudents.findIndex(x=>x.Apellidos===a.Apellidos&&x.Nombre===a.Nombre);const ib=ud.allStudents.findIndex(x=>x.Apellidos===b.Apellidos&&x.Nombre===b.Nombre);return ia-ib;});
+    tbody.innerHTML=alOrden.map(al=>{
+      const ctrlNotas=[],celdas=ctrl.map(c=>{const v=al[c];if(esNota(v))ctrlNotas.push(v);const cls=esNota(v)?notaClass(v):"n-gray";const display=esNota(v)?v.toFixed(1):(esPendiente(v)?String(v).trim().toUpperCase():"–");return "<td><span class=\"nota "+cls+"\">"+display+"</span></td>";}).join("");
+      const fin=al.Final??null,prom=ctrlNotas.length?+(ctrlNotas.reduce((s,x)=>s+x,0)/ctrlNotas.length).toFixed(1):null;
+      const finCls=esNota(fin)?notaClass(fin):"n-gray",finDisplay=esNota(fin)?fin.toFixed(1):(esPendiente(fin)?String(fin).trim().toUpperCase():"–");
+      const secBadge=al.Seccion?"<span class=\"badge-seccion\">"+al.Seccion+"</span>":"";
+      return "<tr><td>"+al.Num+"</td><td><strong>"+al.Apellidos+"</strong><br><span style=\"color:var(--muted);font-size:.78rem\">"+al.Nombre+"</span></td><td>"+secBadge+"</td>"+celdas+"<td><span class=\"nota "+finCls+"\">"+finDisplay+"</span></td><td><span class=\"nota "+notaClass(prom)+"\">"+( prom??"-")+"</span></td></tr>";}).join("");
+  }
+}
+
+// ─── PROMEDIO FINAL ───────────────────────────────────────────────────────────
+let files3=[],finalData=[];
+const dz3=document.getElementById("dropZone3"),xi3=document.getElementById("xlsxInput3");
+dz3.addEventListener("dragover",e=>{e.preventDefault();dz3.classList.add("drag-over");});
+dz3.addEventListener("dragleave",()=>dz3.classList.remove("drag-over"));
+dz3.addEventListener("drop",e=>{e.preventDefault();dz3.classList.remove("drag-over");addFiles3([...e.dataTransfer.files]);});
+xi3.addEventListener("change",()=>{addFiles3([...xi3.files]);xi3.value="";});
+window.removeFile3=idx=>{files3.splice(idx,1);renderFiles3();};
+function addFiles3(nf){nf.forEach(f=>{if(!f.name.match(/\.xlsx?$/i)||files3.some(x=>x.name===f.name))return;files3.push(f);});renderFiles3();}
+function renderFiles3(){
+  const fl=document.getElementById("fileList3"),pl=document.getElementById("pills3");
+  fl.innerHTML=files3.map((f,i)=>"<div class=\"file-item\"><span>📊</span><span>"+f.name+"</span><span class=\"file-mat m-xx\" style=\"background:var(--green-lt);color:var(--green)\">Seguimiento</span><button class=\"rm-btn\" onclick=\"removeFile3("+i+")\">✕</button></div>").join("");
+  pl.innerHTML=files3.length?"<span class=\"pill p-ok\">✅ "+files3.length+" archivo"+( files3.length>1?"s":"")+" cargado"+(files3.length>1?"s":"")+"</span>":"";
+  document.getElementById("calcFinalBtn").disabled=files3.length===0;document.getElementById("exportFinalBtn").disabled=true;document.getElementById("finalPanel").style.display="none";
+}
+function leerResumenExcel(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const wb=XLSX.read(e.target.result,{type:"binary"});
+        const shName=wb.SheetNames.find(n=>n.includes("Resumen")||n.includes("resumen"))||wb.SheetNames[0];
+        const sh=wb.Sheets[shName];const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:""});
+        let hRow=-1;for(let i=0;i<rows.length;i++){if(rows[i].some(c=>String(c).trim()==="Apellidos")){hRow=i;break;}}
+        if(hRow<0)return reject(new Error("No se encontró cabecera en "+file.name));
+        const hdrs=rows[hRow].map(c=>String(c).trim());
+        const iNum=hdrs.indexOf("N°"),iApel=hdrs.indexOf("Apellidos"),iNom=hdrs.indexOf("Nombre"),iSec=hdrs.indexOf("Sección"),iProm=hdrs.findIndex(h=>h.includes("Promedio"));
+        const uMatch=file.name.match(/U(\d)/i),unidad=uMatch?parseInt(uMatch[1]):null;
+        const startIdx=iSec>=0?iSec+1:iNom+1;const matCols=[];
+        for(let j=startIdx;j<hdrs.length;j++){const h=hdrs[j];if(h.includes("Promedio")||h.includes("Aprobada")||h.includes("Reprobada")||h==="Estado")break;if(h)matCols.push({idx:j,name:h.replace(/\s*\(Final\)/,"").trim()});}
+        const alumnos=[];
+        for(let i=hRow+1;i<rows.length;i++){
+          const r=rows[i];const apel=String(r[iApel]||"").trim();if(!apel||apel==="Apellidos")continue;
+          const seccion=iSec>=0?String(r[iSec]||"").trim():"";const prom=typeof r[iProm]==="number"?r[iProm]:parseFloat(r[iProm])||null;
+          const notasMat={};for(const mc of matCols){const v=r[mc.idx];if(typeof v==="number")notasMat[mc.name]=v;else{const s=String(v||"").trim().toUpperCase();notasMat[mc.name]=ESTADOS_PENDIENTES.has(s)?s:(s||null);}}
+          alumnos.push({Num:parseInt(r[iNum])||i-hRow,Apellidos:apel,Nombre:String(r[iNom]||"").trim(),Seccion:seccion,Promedio:prom,NotasMat:notasMat,Unidad:unidad,Fuente:file.name});}
+        resolve({alumnos,unidad});
+      }catch(err){reject(err);}
+    };reader.onerror=reject;reader.readAsBinaryString(file);
+  });
+}
+document.getElementById("calcFinalBtn").addEventListener("click",async()=>{
+  const sl=document.getElementById("stLoad3"),se=document.getElementById("stErr3");
+  hide(se);show(sl);document.getElementById("calcFinalBtn").disabled=true;finalData=[];
+  try{
+    const porUnidad={};
+    for(const f of files3){const{alumnos,unidad}=await leerResumenExcel(f);const key=unidad||"?";if(!porUnidad[key])porUnidad[key]=[];alumnos.forEach(al=>porUnidad[key].push(al));}
+    const mapaEstudiantes={};
+    for(const[unidad,alumnos]of Object.entries(porUnidad)){alumnos.forEach(al=>{const k=keyAl(al);if(!mapaEstudiantes[k])mapaEstudiantes[k]={Num:al.Num,Apellidos:al.Apellidos,Nombre:al.Nombre,Seccion:al.Seccion,promediosPorUnidad:{}};if(al.Promedio!==null)mapaEstudiantes[k].promediosPorUnidad[unidad]=al.Promedio;if(!mapaEstudiantes[k].Seccion&&al.Seccion)mapaEstudiantes[k].Seccion=al.Seccion;});}
+    finalData=Object.values(mapaEstudiantes).map(est=>{const proms=Object.values(est.promediosPorUnidad).filter(p=>typeof p==="number");const promFinal=proms.length?+(proms.reduce((s,x)=>s+x,0)/proms.length).toFixed(2):null;return{...est,PromFinal:promFinal,unidades:Object.keys(porUnidad).sort()};}).sort((a,b)=>a.Apellidos.localeCompare(b.Apellidos));
+    renderFinalStats();renderFinalTabla(finalData);document.getElementById("finalPanel").style.display="block";document.getElementById("exportFinalBtn").disabled=false;hide(sl);
+  }catch(err){hide(sl);document.getElementById("errTxt3").textContent=err.message;show(se);}
+  finally{document.getElementById("calcFinalBtn").disabled=false;}
+});
+function renderFinalStats(){
+  const total=finalData.length,apro=finalData.filter(e=>esNota(e.PromFinal)&&e.PromFinal>=NOTA_MIN).length,repo=finalData.filter(e=>esNota(e.PromFinal)&&e.PromFinal<NOTA_MIN).length;
+  const prec=finalData.filter(e=>esNota(e.PromFinal)&&e.PromFinal>=NOTA_MIN&&e.PromFinal<PROM_PRECAUCION).length;
+  const prom=finalData.filter(e=>esNota(e.PromFinal)).reduce((s,e,_,a)=>s+e.PromFinal/a.length,0);
+  document.getElementById("finalStats").innerHTML="<div class=\"final-stat\" style=\"border-top:3px solid var(--navy)\"><div class=\"fn\" style=\"color:var(--navy)\">"+total+"</div><div class=\"fl\">Total estudiantes</div></div><div class=\"final-stat\" style=\"border-top:3px solid var(--green)\"><div class=\"fn\" style=\"color:var(--green)\">"+apro+"</div><div class=\"fl\">Aprobados</div></div><div class=\"final-stat\" style=\"border-top:3px solid var(--red)\"><div class=\"fn\" style=\"color:var(--red)\">"+repo+"</div><div class=\"fl\">Reprobados</div></div><div class=\"final-stat\" style=\"border-top:3px solid #7A5000\"><div class=\"fn\" style=\"color:#7A5000\">"+prec+"</div><div class=\"fl\">Precaución</div></div><div class=\"final-stat\" style=\"border-top:3px solid var(--gold)\"><div class=\"fn\" style=\"color:var(--navy)\">"+prom.toFixed(1)+"</div><div class=\"fl\">Promedio del curso</div></div>";
+}
+function renderFinalTabla(datos){
+  const tbody=document.getElementById("finalBody");
+  const unidades=datos.length?Object.keys(datos[0].promediosPorUnidad||{}).sort():[];
+  for(let i=1;i<=5;i++){const th=document.getElementById("th-u"+i);if(th)th.textContent=unidades.includes(String(i))?"U"+i:"-";}
+  tbody.innerHTML=datos.map(e=>{
+    const secBadge=e.Seccion?"<span class=\"badge-seccion\">"+e.Seccion+"</span>":"–";
+    const uCols=[1,2,3,4,5].map(i=>{const p=e.promediosPorUnidad?.[i];return "<td>"+(esNota(p)?"<span class=\"nota "+notaClass(p)+"\">"+p.toFixed(1)+"</span>":"–")+"</td>";}).join("");
+    const pf=e.PromFinal,pfCls=esNota(pf)?notaClass(pf):"n-gray";
+    let estadoTxt,estadoCls;
+    if(!esNota(pf)){estadoTxt="Sin datos";estadoCls="e-warn";}
+    else if(pf>=NOTA_MIN&&pf<PROM_PRECAUCION){estadoTxt="⚠️ Precaución";estadoCls="e-prec";}
+    else if(pf<NOTA_MIN){estadoTxt="🔴 Reprobado";estadoCls="e-crit";}
+    else{estadoTxt="🟢 Aprobado";estadoCls="e-ok";}
+    return "<tr><td>"+e.Num+"</td><td><strong>"+e.Apellidos+"</strong><br><span style=\"color:var(--muted);font-size:.78rem\">"+e.Nombre+"</span></td><td>"+secBadge+"</td>"+uCols+"<td><span class=\"nota "+pfCls+"\">"+( esNota(pf)?pf.toFixed(2):"–")+"</span></td><td><span class=\"estado "+estadoCls+"\">"+estadoTxt+"</span></td></tr>";}).join("")||"<tr><td colspan=\"10\" style=\"text-align:center;padding:1.5rem;color:var(--muted)\">Sin datos</td></tr>";
+  document.getElementById("finalCount").textContent="Mostrando "+datos.length+" estudiantes";
+}
+function filtrarFinal(tipo,btn){
+  if(btn)document.querySelectorAll("[id^='ff-']").forEach(b=>b.className="filtro-btn");
+  const busq=normStr(document.getElementById("buscarFinal").value||"");let base=[...finalData];
+  if(tipo==="crit"){base=base.filter(e=>esNota(e.PromFinal)&&e.PromFinal<NOTA_MIN);if(btn)btn.className="filtro-btn on";}
+  else if(tipo==="prec"){base=base.filter(e=>esNota(e.PromFinal)&&e.PromFinal>=NOTA_MIN&&e.PromFinal<PROM_PRECAUCION);if(btn)btn.className="filtro-btn on-prec";}
+  else if(tipo==="ok"){base=base.filter(e=>esNota(e.PromFinal)&&e.PromFinal>=PROM_PRECAUCION);if(btn)btn.className="filtro-btn on-all";}
+  else if(tipo==="search"){
+    const activo=document.querySelector("#ff-crit.on,#ff-prec.on-prec,#ff-ok.on-all:not(#ff-all)");
+    if(activo?.id==="ff-crit")base=base.filter(e=>esNota(e.PromFinal)&&e.PromFinal<NOTA_MIN);
+    else if(activo?.id==="ff-prec")base=base.filter(e=>esNota(e.PromFinal)&&e.PromFinal>=NOTA_MIN&&e.PromFinal<PROM_PRECAUCION);
+    else if(activo?.id==="ff-ok")base=base.filter(e=>esNota(e.PromFinal)&&e.PromFinal>=PROM_PRECAUCION);
+  }
+  else{if(btn)btn.className="filtro-btn on-all";}
+  if(busq)base=base.filter(e=>normStr(e.Apellidos).includes(busq)||normStr(e.Nombre).includes(busq));
+  renderFinalTabla(base);
+}
+document.getElementById("exportFinalBtn").addEventListener("click",()=>{
+  if(!finalData.length)return;const wb=XLSX.utils.book_new();
+  const hdr=["N°","Apellidos","Nombre","Sección","U1","U2","U3","U4","U5","Promedio Final","Estado"];
+  const rows=finalData.map(e=>{const us=[1,2,3,4,5].map(i=>e.promediosPorUnidad?.[i]??"–");const pf=e.PromFinal;const estado=!esNota(pf)?"Sin datos":pf<NOTA_MIN?"🔴 Reprobado":pf<PROM_PRECAUCION?"⚠️ Precaución":"🟢 Aprobado";return[e.Num,e.Apellidos,e.Nombre,e.Seccion||"",...us,pf??"–",estado];});
+  const ws=XLSX.utils.aoa_to_sheet([hdr,...rows]);ws["!cols"]=[4,22,18,10,8,8,8,8,8,14,14].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb,ws,"🏁 Promedio Final");XLSX.writeFile(wb,"PromedioFinal_CDAR_"+Date.now()+".xlsx");mostrarToast("📥 Excel descargado");
+});
+
+// ─── CONSOLIDADOR ────────────────────────────────────────────────────────────
+let files2=[],casosRiesgo=[],casosFiltrados=[];
+const dz2=document.getElementById("dropZone2"),xi2=document.getElementById("xlsxInput2");
+dz2.addEventListener("dragover",e=>{e.preventDefault();dz2.classList.add("drag-over");});
+dz2.addEventListener("dragleave",()=>dz2.classList.remove("drag-over"));
+dz2.addEventListener("drop",e=>{e.preventDefault();dz2.classList.remove("drag-over");addFiles2([...e.dataTransfer.files]);});
+xi2.addEventListener("change",()=>{addFiles2([...xi2.files]);xi2.value="";});
+window.removeFile2=idx=>{files2.splice(idx,1);renderFiles2();};
+function addFiles2(nf){nf.forEach(f=>{if(!f.name.match(/\.xlsx?$/i)||files2.some(x=>x.name===f.name))return;files2.push(f);});renderFiles2();}
+function renderFiles2(){
+  const fl=document.getElementById("fileList2"),pl=document.getElementById("pills2");
+  fl.innerHTML=files2.map((f,i)=>"<div class=\"file-item\"><span>📊</span><span>"+f.name+"</span><span class=\"file-mat\" style=\"background:var(--red-lt);color:var(--red)\">Seguimiento</span><button class=\"rm-btn\" onclick=\"removeFile2("+i+")\">✕</button></div>").join("");
+  pl.innerHTML=files2.length?"<span class=\"pill p-ok\">✅ "+files2.length+" archivo"+(files2.length>1?"s":"")+"</span>":"";
+  document.getElementById("analizarBtn").disabled=files2.length===0;
+  document.getElementById("exportRiesgoBtn").disabled=true;
+  document.getElementById("informeUrgenteBtn").disabled=true;
+  document.getElementById("informePrecaucionBtn").disabled=true;
+  document.getElementById("riesgoPanel").style.display="none";
+}
+function leerExcelConsolidado(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const wb=XLSX.read(e.target.result,{type:"binary"});
+        // Extraer observaciones Y detalle de evaluaciones de hojas de materia
+        const obsMap={},detalleMap={};
+        for(const shN of wb.SheetNames){
+          if(shN.includes("Resumen")||shN.includes("Riesgo")||shN.includes("Estadístic")||shN.includes("Estadistic"))continue;
+          const shM=wb.Sheets[shN];const rowsM=XLSX.utils.sheet_to_json(shM,{header:1,defval:""});
+          let hM=-1;for(let i=0;i<rowsM.length;i++){if(rowsM[i].includes("Apellidos")){hM=i;break;}}if(hM<0)continue;
+          const hdrsM=rowsM[hM].map(c=>String(c).trim());
+          const iAp=hdrsM.indexOf("Apellidos"),iNom=hdrsM.indexOf("Nombre"),iOb=hdrsM.findIndex(h=>h.toLowerCase()==="observaciones");
+          const matHoja=shN.replace(/[^\w\s·áéíóúñÁÉÍÓÚÑ]/gu,"").trim();
+          // Columnas de evaluaciones (todo excepto metadatos y Observaciones)
+          const skipCols=new Set(["N°","Apellidos","Nombre","Sección","Recuperación","Promedio Controles","Observaciones",""]);
+          const evalCols=hdrsM.map((h,j)=>({h,j})).filter(({h})=>!skipCols.has(h));
+          for(let i=hM+1;i<rowsM.length;i++){
+            const r=rowsM[i];const apel=String(r[iAp]||"").trim(),nom=String(r[iNom]||"").trim();if(!apel)continue;
+            const k=apel+"||"+nom;
+            // Observaciones
+            if(iOb>=0){const obs=String(r[iOb]||"").trim();if(obs){if(!obsMap[k])obsMap[k]={};obsMap[k][matHoja]=obs;}}
+            // Detalle de evaluaciones
+            if(!detalleMap[k])detalleMap[k]={};
+            if(!detalleMap[k][matHoja])detalleMap[k][matHoja]={};
+            for(const{h,j}of evalCols){const v=r[j];if(typeof v==="number")detalleMap[k][matHoja][h]=Math.round(v*10)/10;}
+          }
+        }
+        // Leer hoja Resumen
+        const shName=wb.SheetNames.find(n=>n.includes("Resumen")||n.includes("resumen"))||wb.SheetNames[0];
+        const sh=wb.Sheets[shName];const rows=XLSX.utils.sheet_to_json(sh,{header:1,defval:""});
+        let hRow=-1;for(let i=0;i<rows.length;i++){if(rows[i].some(c=>String(c).trim()==="Apellidos")){hRow=i;break;}}
+        if(hRow<0)return reject(new Error("No se encontró cabecera en "+file.name));
+        const hdrs=rows[hRow].map(c=>String(c).trim());
+        const iNum=hdrs.indexOf("N°"),iApel=hdrs.indexOf("Apellidos"),iNom=hdrs.indexOf("Nombre"),iSec=hdrs.indexOf("Sección"),iEst=hdrs.findIndex(h=>h==="Estado"),iProm=hdrs.findIndex(h=>h.includes("Promedio")),iApro=hdrs.findIndex(h=>h.includes("Aprobada")),iRepo=hdrs.findIndex(h=>h.includes("Reprobada"));
+        const startIdx=iSec>=0?iSec+1:iNom+1;const matCols=[];
+        for(let j=startIdx;j<hdrs.length;j++){const h=hdrs[j];if(h.includes("Promedio")||h.includes("Aprobada")||h.includes("Reprobada")||h==="Estado")break;if(h)matCols.push({idx:j,name:h.replace(/\s*\(Final\)/,"").trim()});}
+        const curso=file.name.replace(/Seguimiento_CDAR_/i,"").replace(/U\d_/i,"").replace(/\.xlsx?$/i,"").replace(/_/g," ").replace(/\d{13}/,"").trim()||file.name;
+        const alumnos=[];
+        for(let i=hRow+1;i<rows.length;i++){
+          const r=rows[i];const apel=String(r[iApel]||"").trim();if(!apel||apel==="Apellidos")continue;
+          const seccion=iSec>=0?String(r[iSec]||"").trim():"";const prom=typeof r[iProm]==="number"?r[iProm]:parseFloat(r[iProm])||null;
+          const apro=typeof r[iApro]==="number"?r[iApro]:parseInt(r[iApro])||0,repo=typeof r[iRepo]==="number"?r[iRepo]:parseInt(r[iRepo])||0;
+          const notasMat={};for(const mc of matCols){const v=r[mc.idx];if(typeof v==="number")notasMat[mc.name]=v;else{const s=String(v||"").trim().toUpperCase();notasMat[mc.name]=ESTADOS_PENDIENTES.has(s)?s:(s||null);}}
+          const obsAlumno=obsMap[apel+"||"+String(r[iNom]||"").trim()]||{};
+          const detalleAlumno=detalleMap[apel+"||"+String(r[iNom]||"").trim()]||{};
+          alumnos.push({Num:parseInt(r[iNum])||i-hRow,Apellidos:apel,Nombre:String(r[iNom]||"").trim(),Seccion:seccion,Estado:String(r[iEst]||"").trim(),Promedio:prom,Aprobadas:apro,Reprobadas:repo,NotasMat:notasMat,Curso:curso,Fuente:file.name,ObservacionesPorMateria:obsAlumno,DetalleNotas:detalleAlumno});
+        }
+        resolve(alumnos);
+      }catch(err){reject(err);}
+    };reader.onerror=reject;reader.readAsBinaryString(file);
+  });
+}
+document.getElementById("analizarBtn").addEventListener("click",async()=>{
+  const sl2=document.getElementById("stLoad2"),se2=document.getElementById("stErr2");
+  hide(se2);show(sl2);document.getElementById("analizarBtn").disabled=true;casosRiesgo=[];
+  try{
+    for(const f of files2){const alumnos=await leerExcelConsolidado(f);for(const al of alumnos){const matRepro=Object.entries(al.NotasMat).filter(([,v])=>typeof v==="number"&&v<NOTA_MIN).map(([mat,n])=>({mat,nota:n}));if(!matRepro.length)continue;casosRiesgo.push({...al,MatRepro:matRepro,Nivel:al.Reprobadas>=2?"crit":"warn"});}}
+    casosRiesgo.sort((a,b)=>{if(a.Nivel!==b.Nivel)return a.Nivel==="crit"?-1:1;if(b.Reprobadas!==a.Reprobadas)return b.Reprobadas-a.Reprobadas;return a.Apellidos.localeCompare(b.Apellidos);});
+    casosFiltrados=[...casosRiesgo];renderStats();renderTablaRiesgo(casosFiltrados);document.getElementById("riesgoPanel").style.display="block";
+    document.getElementById("exportRiesgoBtn").disabled=false;hide(sl2);
+  }catch(err){hide(sl2);document.getElementById("errTxt2").textContent=err.message;show(se2);}
+  finally{document.getElementById("analizarBtn").disabled=false;}
+});
+function renderStats(){
+  const crit=casosRiesgo.filter(c=>c.Nivel==="crit").length,warn=casosRiesgo.filter(c=>c.Nivel==="warn").length;
+  document.getElementById("statsRow").innerHTML="<div class=\"stat-box stat-crit\"><div class=\"stat-n\">"+crit+"</div><div class=\"stat-lbl\">🔴 Críticos</div></div><div class=\"stat-box stat-risk\"><div class=\"stat-n\">"+warn+"</div><div class=\"stat-lbl\">🟡 En riesgo</div></div><div class=\"stat-box stat-total\"><div class=\"stat-n\">"+casosRiesgo.length+"</div><div class=\"stat-lbl\">Total alertas</div></div><div class=\"stat-box stat-archivos\"><div class=\"stat-n\">"+files2.length+"</div><div class=\"stat-lbl\">Excel cargados</div></div>";
+  document.getElementById("informeUrgenteBtn").disabled=false;
+  if(crit>0)document.getElementById("urgenteBadge").style.display="inline-flex";
+  const precCasos=casosRiesgo.filter(c=>typeof c.Promedio==="number"&&c.Promedio<PROM_PRECAUCION);
+  if(precCasos.length>0){document.getElementById("informePrecaucionBtn").disabled=false;document.getElementById("precaucionBadge").style.display="inline-flex";}
+  // Section filter
+  const filtrosBar=document.querySelector('#riesgoPanel .filtros-bar');
+  if(filtrosBar){
+    filtrosBar.querySelectorAll('.filtro-seccion').forEach(el=>el.remove());
+    const secciones=[...new Set(casosRiesgo.map(c=>c.Seccion).filter(Boolean))].sort();
+    if(secciones.length){
+      let html='<span class="filtro-label" style="margin-left:8px;border-left:1px solid var(--border);padding-left:8px">Sección:</span>';
+      html+=`<button class="filtro-seccion filtro-btn on-all" onclick="setFiltroSeccion('riesgo','',this)">Todas</button>`;
+      secciones.forEach(s=>{html+=`<button class="filtro-seccion filtro-btn" onclick="setFiltroSeccion('riesgo','${s}',this)">${s}</button>`;});
+      filtrosBar.insertAdjacentHTML('beforeend',html);
+    }
+  }
+  actualizarDashboard();
+  guardarSession();
+  // v3: sincronizar automáticamente con la página de Citaciones
+  sincronizarCitacionesDesdeRiesgo();
+}
+const matCssMap={"Ciencias":"m-ci","Historia":"m-hi","Inglés":"m-in","Lenguaje":"m-le","Matemática":"m-ma"};
+function renderTablaRiesgo(casos){
+  document.getElementById("riesgoBody").innerHTML=casos.length===0
+    ?"<tr><td colspan=\"9\" style=\"text-align:center;padding:1.5rem;color:var(--green)\">✅ No hay estudiantes en riesgo con los filtros aplicados.</td></tr>"
+    :casos.map(c=>{
+      const trCls=c.Nivel==="crit"?"tr-crit":"tr-warn";
+      const nivelBadge=c.Nivel==="crit"?"<span class=\"nivel-crit\">🔴 Crítico ("+c.Reprobadas+" mat.)</span>":"<span class=\"nivel-warn\">🟡 En riesgo ("+c.Reprobadas+" mat.)</span>";
+      const matsRepro=c.MatRepro.map(({mat,nota})=>"<span class=\"badge-mat "+(matCssMap[mat]||"m-xx")+"\">"+mat+": "+nota.toFixed(1)+"</span>").join(" ");
+      const accion=c.Reprobadas>=2?"⚠️ Contactar apoderado urgente":c.Reprobadas>=1?"📚 Reforzamiento docente":"👁 Monitorear";
+      const prom=typeof c.Promedio==="number"?c.Promedio.toFixed(1):"–",promCls=typeof c.Promedio==="number"?notaClass(c.Promedio):"n-gray";
+      const secBadge=c.Seccion?"<span class=\"badge-seccion\">"+c.Seccion+"</span>":"–";
+      return "<tr class=\""+trCls+"\"><td><strong>"+c.Apellidos+"</strong><br><span style=\"color:var(--muted);font-size:.76rem\">"+c.Nombre+"</span></td><td>"+secBadge+"</td><td><span class=\"badge-curso\">"+c.Curso+"</span><br><span class=\"badge-fuente\">"+c.Fuente+"</span></td><td>"+nivelBadge+"</td><td>"+c.Reprobadas+"</td><td><span class=\"nota "+promCls+"\">"+prom+"</span></td><td style=\"line-height:1.8\">"+matsRepro+"</td><td style=\"font-size:.78rem;color:var(--muted)\">"+accion+"</td><td><textarea class=\"obs-input\" rows=\"2\" placeholder=\"Nota del coordinador…\" data-key=\""+xe(c.Apellidos)+"||"+xe(c.Nombre)+"\" onchange=\"guardarObsCoord(this,this.dataset.key)\">"+xe(getObsCoord(c.Apellidos+"||"+c.Nombre)||"")+"</textarea></td></tr>";
+    }).join("");
+  document.getElementById("riesgoCount").textContent="Mostrando "+casos.length+" de "+casosRiesgo.length+" casos";
+}
+function filtrarRiesgo(tipo,btn){
+  if(btn)document.querySelectorAll("#f-all,#f-crit,#f-warn").forEach(b=>b.className="filtro-btn");
+  const busq=normStr(document.getElementById("buscarAlumno").value||"");let base=[...casosRiesgo];
+  if(tipo==="crit"){base=base.filter(c=>c.Nivel==="crit");if(btn)btn.className="filtro-btn on";}
+  else if(tipo==="warn"){base=base.filter(c=>c.Nivel==="warn");if(btn)btn.className="filtro-btn on-warn";}
+  else if(tipo==="all"){if(btn)btn.className="filtro-btn on-all";}
+  else if(tipo==="search"){const activo=document.querySelector(".filtro-btn.on,.filtro-btn.on-all,.filtro-btn.on-warn");if(activo?.id==="f-crit")base=base.filter(c=>c.Nivel==="crit");else if(activo?.id==="f-warn")base=base.filter(c=>c.Nivel==="warn");}
+  if(filtroSeccionRiesgo)base=base.filter(c=>c.Seccion===filtroSeccionRiesgo);
+  if(busq)base=base.filter(c=>normStr(c.Apellidos).includes(busq)||normStr(c.Nombre).includes(busq));
+  casosFiltrados=base;renderTablaRiesgo(base);
+}
+document.getElementById("exportRiesgoBtn").addEventListener("click",()=>{
+  if(!casosRiesgo.length)return;const wb2=XLSX.utils.book_new();
+  const hdrs=["Apellidos","Nombre","Sección","Curso","Fuente","Nivel Riesgo","Mat. Reprobadas","Promedio Gral.",...MATERIAS.map(m=>m+" (Nota)"),"Acción Sugerida"];
+  const rows=casosRiesgo.map(c=>{const nivel=c.Nivel==="crit"?"🔴 CRÍTICO":"🟡 EN RIESGO";const accion=c.Reprobadas>=2?"Contactar apoderado urgente":c.Reprobadas>=1?"Reforzamiento docente":"Monitorear";const matNotas=MATERIAS.map(m=>{const v=c.NotasMat[m];return typeof v==="number"?v:(v||"–");});return[c.Apellidos,c.Nombre,c.Seccion||"",c.Curso,c.Fuente,nivel,c.Reprobadas,typeof c.Promedio==="number"?c.Promedio:"–",...matNotas,accion];});
+  const ws=XLSX.utils.aoa_to_sheet([hdrs,...rows]);ws["!cols"]=[22,18,10,14,20,12,8,10,...MATERIAS.map(()=>10),28].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb2,ws,"🔴 Consolidado Riesgo");XLSX.writeFile(wb2,"Consolidado_Riesgo_CDAR_"+Date.now()+".xlsx");mostrarToast("📥 Excel descargado");
+});
+
+// ─── MODAL ───────────────────────────────────────────────────────────────────
+function cerrarModal(id){document.getElementById(id).classList.remove("open");}
+document.getElementById("modalInforme").addEventListener("click",function(e){if(e.target===this)cerrarModal("modalInforme");});
+
+let modoInforme="urgente",cartasGeneradas=[];
+
+document.getElementById("informeUrgenteBtn").addEventListener("click",()=>{
+  modoInforme="urgente";
+  document.getElementById("modalInformeTitulo").textContent="📄 Carta urgente para apoderado";
+  document.getElementById("modalInformeHead").className="modal-head";
+  document.getElementById("btnGenerar").style.background="#7B1A1A";
+  document.getElementById("paso-selector-desc").textContent="Selecciona los estudiantes. Los marcados en rojo tienen nivel Crítico.";
+  const selector=document.getElementById("estSelector");selector.innerHTML="";
+  [...casosRiesgo.filter(c=>c.Nivel==="crit"),...casosRiesgo.filter(c=>c.Nivel==="warn")].forEach(c=>{
+    const chip=document.createElement("button");chip.className="est-chip"+(c.Nivel==="crit"?" crit-chip":"");
+    chip.dataset.key=c.Apellidos+"||"+c.Nombre;
+    chip.textContent=c.Apellidos+", "+c.Nombre+(c.Seccion?" ["+c.Seccion+"]":"")+" ("+c.Reprobadas+" mat.)";
+    if(c.Nivel==="crit")chip.classList.add("sel");
+    chip.addEventListener("click",()=>chip.classList.toggle("sel"));selector.appendChild(chip);});
+  document.getElementById("inputApoderado").value="";document.getElementById("inputFecha").value="";document.getElementById("inputObs").value="";
+  document.getElementById("paso-selector").style.display="block";document.getElementById("paso-preview").style.display="none";
+  document.getElementById("btnDescargarWord").style.display="none";
+  document.getElementById("modalInforme").classList.add("open");
+});
+document.getElementById("informePrecaucionBtn").addEventListener("click",()=>{
+  modoInforme="precaucion";
+  document.getElementById("modalInformeTitulo").textContent="📄 Carta de precaución para apoderado";
+  document.getElementById("modalInformeHead").className="modal-head prec";
+  document.getElementById("btnGenerar").style.background="#7A5000";
+  document.getElementById("paso-selector-desc").textContent="Estudiantes con promedio inferior a 5,0. Preseleccionados automáticamente.";
+  const casos=casosRiesgo.filter(c=>typeof c.Promedio==="number"&&c.Promedio<PROM_PRECAUCION);
+  if(!casos.length){mostrarToast("No hay estudiantes con promedio inferior a 5,0");return;}
+  const selector=document.getElementById("estSelector");selector.innerHTML="";
+  casos.sort((a,b)=>a.Promedio-b.Promedio).forEach(c=>{
+    const chip=document.createElement("button");chip.className="est-chip prec-chip"+(c.Promedio<4.5?" crit-chip":"");
+    chip.dataset.key=c.Apellidos+"||"+c.Nombre;chip.textContent=c.Apellidos+", "+c.Nombre+(c.Seccion?" ["+c.Seccion+"]":"")+" — Prom. "+c.Promedio.toFixed(1);
+    chip.classList.add("sel");chip.addEventListener("click",()=>chip.classList.toggle("sel"));selector.appendChild(chip);});
+  document.getElementById("inputApoderado").value="";document.getElementById("inputFecha").value="";document.getElementById("inputObs").value="";
+  document.getElementById("paso-selector").style.display="block";document.getElementById("paso-preview").style.display="none";
+  document.getElementById("btnDescargarWord").style.display="none";
+  document.getElementById("modalInforme").classList.add("open");
+});
+function volverSelector(){
+  document.getElementById("paso-selector").style.display="block";document.getElementById("paso-preview").style.display="none";
+  document.getElementById("btnDescargarWord").style.display="none";
+}
+
+// ─── GENERACIÓN WORD ──────────────────────────────────────────────────────────
+function notaColorHex(n){if(!esNota(n))return"888888";if(n>=5)return"1A8A5A";if(n>=4)return"E8A020";return"C0392B";}
+function notaEstadoTexto(n){if(!esNota(n))return"—";if(n>=5)return"Aprobada";if(n>=4)return"En observación";return"Reprobada";}
+function xe(s){return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+
+function wR(t,{b=false,c="222222",s=22,i=false}={}){
+  return`<w:r><w:rPr>${b?"<w:b/>":""}${i?"<w:i/>":""}<w:color w:val="${c}"/><w:sz w:val="${s}"/><w:szCs w:val="${s}"/><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr><w:t xml:space="preserve">${xe(t)}</w:t></w:r>`;}
+
+function wP(runs,{be=0,af=100,al="left",sh=null,bb=null}={}){
+  let pp=`<w:spacing w:before="${be}" w:after="${af}"/><w:jc w:val="${al}"/>`;
+  if(sh)pp+=`<w:shd w:val="clear" w:color="auto" w:fill="${sh}"/>`;
+  const pbd=bb?`<w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="${bb}"/></w:pBdr>`:"";
+  return`<w:p><w:pPr>${pp}${pbd}</w:pPr>${runs}</w:p>`;}
+
+function wTC(ps,{w:ww,sh=null,bdr=true}={}){
+  const b=bdr?`<w:tcBorders><w:top w:val="single" w:sz="1" w:color="D0D8E8"/><w:bottom w:val="single" w:sz="1" w:color="D0D8E8"/><w:left w:val="single" w:sz="1" w:color="D0D8E8"/><w:right w:val="single" w:sz="1" w:color="D0D8E8"/></w:tcBorders>`:`<w:tcBorders><w:top w:val="none"/><w:bottom w:val="none"/><w:left w:val="none"/><w:right w:val="none"/></w:tcBorders>`;
+  const s=sh?`<w:shd w:val="clear" w:color="auto" w:fill="${sh}"/>`:"";
+  return`<w:tc><w:tcPr>${b}${s}<w:tcW w:w="${ww}" w:type="dxa"/><w:tcMar><w:top w:w="90" w:type="dxa"/><w:bottom w:w="90" w:type="dxa"/><w:left w:w="130" w:type="dxa"/><w:right w:w="130" w:type="dxa"/></w:tcMar></w:tcPr>${ps}</w:tc>`;}
+
+function buildDocxXml(caso,apod,fechaReunion,obsExtra,obsIA,tipo){
+  const hoy=new Date().toLocaleDateString("es-CL",{weekday:"long",year:"numeric",month:"long",day:"numeric"});
+  const AZUL="1F3864",DORADO="C9A84C",GRIS="F4F6FA",GRIS2="EEF2F8",AZUL_CLARO="D6E4F0",DORADO_CLARO="FDF3DC";
+  const saludo=tipo==="urgente"
+    ?"Nos comunicamos con usted de manera prioritaria, ya que el rendimiento académico de su estudiante requiere atención y acompañamiento inmediato."
+    :"Nos comunicamos para compartir el estado académico de su estudiante como parte del seguimiento preventivo que realizamos en C·DAR.";
+
+  // ── COLUMNAS FIJAS obligatorias ──────────────────────────────────────────
+  // Página A4 vertical, márgenes 1cm → ancho útil ≈ 9360 dxa (14.6 cm efectivos con mm ajustados)
+  // Columnas: Asignatura | T1 | T2 | T3 | Guía | Ensayo | Lectura | Nota Final | Promedio
+  const TOTAL_W=9360;
+  const COLS_FIJAS=["Tarea 1","Tarea 2","Tarea 3","Guía","Ensayo","Lectura"];
+  const N_FIJAS=COLS_FIJAS.length; // 6
+  // Anchos: Asignatura más ancha, evaluaciones compactas, Final y Promedio ligeramente más anchos
+  const W_MAT=1760;            // ~3 cm — Asignatura
+  const W_EV=Math.floor((TOTAL_W-W_MAT-1700)/N_FIJAS); // reparto para 6 cols de eval → ~943 cada una
+  const W_FINAL=860;           // Nota Final
+  const W_PROM=TOTAL_W-W_MAT-(N_FIJAS*W_EV)-W_FINAL; // Promedio ajustado para completar exacto
+
+  const detalle=caso.DetalleNotas||{};
+  const materiasConNota=Object.entries(caso.NotasMat).filter(([,v])=>esNota(v));
+
+  // Helpers de celda
+  function cabCell(txt,w,sz=17){
+    return wTC(wP(wR(txt,{b:true,c:"FFFFFF",s:sz}),{al:"center"}),{w,sh:AZUL,bdr:false});
+  }
+  function datCell(txt,w,{sh="FFFFFF",bold=false,color="333333",size=18,al="center"}={}){
+    return wTC(wP(wR(txt,{b:bold,c:color,s:size}),{al}),{w,sh});
+  }
+
+  // ── Fila de cabecera ──────────────────────────────────────────────────────
+  const filaCab=`<w:tr>
+    ${cabCell("Asignatura",W_MAT,17)}
+    ${COLS_FIJAS.map(ev=>cabCell(ev,W_EV,15)).join("")}
+    ${cabCell("Nota Final",W_FINAL,16)}
+    ${cabCell("Promedio",W_PROM,16)}
+  </w:tr>`;
+
+  // ── Filas por asignatura ──────────────────────────────────────────────────
+  const filasAsg=materiasConNota.map(([mat,notaFinal],rowIdx)=>{
+    const evDet=detalle[mat]||{};
+    const bg=rowIdx%2===0?"FFFFFF":GRIS;
+    const bgDest=rowIdx%2===0?GRIS2:"E8EFF7";
+
+    // Celda asignatura
+    const cAsg=datCell(mat,W_MAT,{sh:AZUL_CLARO,bold:true,color:AZUL,size:17,al:"left"});
+
+    // Celdas evaluaciones fijas — si no hay nota → "—"
+    const cEvals=COLS_FIJAS.map(ev=>{
+      // buscar por nombre exacto o aproximado (normalizado)
+      const clave=Object.keys(evDet).find(k=>
+        k.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")===
+        ev.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+      );
+      const n=clave!==undefined?evDet[clave]:null;
+      if(esNota(n)) return datCell(n.toFixed(1),W_EV,{sh:bg,color:notaColorHex(n),size:18});
+      return datCell("—",W_EV,{sh:bg,color:"AAAAAA",size:17});
+    });
+
+    // Nota Final
+    const cFinal=datCell(notaFinal.toFixed(1),W_FINAL,{sh:bgDest,color:notaColorHex(notaFinal),bold:true,size:19});
+
+    // Promedio de las evaluaciones registradas
+    const notasReg=Object.entries(evDet)
+      .filter(([k,v])=>k!=="Final"&&k!=="Recuperacion"&&esNota(v))
+      .map(([,v])=>v);
+    const promVal=notasReg.length>0?(notasReg.reduce((a,b)=>a+b,0)/notasReg.length):notaFinal;
+    const cProm=datCell(promVal.toFixed(1),W_PROM,{sh:bgDest,color:notaColorHex(promVal),bold:true,size:19});
+
+    return`<w:tr>${cAsg}${cEvals.join("")}${cFinal}${cProm}</w:tr>`;
+  }).join("");
+
+  // ── Fila Promedio General ─────────────────────────────────────────────────
+  const promGralStr=esNota(caso.Promedio)?caso.Promedio.toFixed(1):"—";
+  const filaPromGral=`<w:tr>
+    ${datCell("Promedio General",W_MAT,{sh:DORADO_CLARO,bold:true,color:AZUL,size:18,al:"left"})}
+    ${COLS_FIJAS.map(()=>datCell("",W_EV,{sh:DORADO_CLARO,color:"FFFFFF",size:14})).join("")}
+    ${datCell(promGralStr,W_FINAL,{sh:DORADO_CLARO,color:notaColorHex(caso.Promedio),bold:true,size:20})}
+    ${datCell(notaEstadoTexto(caso.Promedio),W_PROM,{sh:DORADO_CLARO,color:notaColorHex(caso.Promedio),bold:true,size:17})}
+  </w:tr>`;
+
+  // ── Grid y tabla ──────────────────────────────────────────────────────────
+  const gridCols=`<w:gridCol w:w="${W_MAT}"/>`
+    +COLS_FIJAS.map(()=>`<w:gridCol w:w="${W_EV}"/>`).join("")
+    +`<w:gridCol w:w="${W_FINAL}"/>`
+    +`<w:gridCol w:w="${W_PROM}"/>`;
+
+  const tblHorizontal=`<w:tbl>
+    <w:tblPr>
+      <w:tblW w:w="${TOTAL_W}" w:type="dxa"/>
+      <w:tblLayout w:type="fixed"/>
+      <w:tblBorders>
+        <w:top w:val="single" w:sz="4" w:color="${AZUL}"/>
+        <w:bottom w:val="single" w:sz="4" w:color="${AZUL}"/>
+        <w:left w:val="single" w:sz="4" w:color="${AZUL}"/>
+        <w:right w:val="single" w:sz="4" w:color="${AZUL}"/>
+        <w:insideH w:val="single" w:sz="1" w:color="D0D8E8"/>
+        <w:insideV w:val="single" w:sz="1" w:color="D0D8E8"/>
+      </w:tblBorders>
+    </w:tblPr>
+    <w:tblGrid>${gridCols}</w:tblGrid>
+    ${filaCab}${filasAsg}${filaPromGral}
+  </w:tbl>`;
+
+  // ── Opciones C·DAR ────────────────────────────────────────────────────────
+  const opciones=[
+    {t:"Reunión con tutor académico",d:tipo==="urgente"?"Le solicitamos agendar una reunión a la brevedad para definir un plan de apoyo conjunto.":"Podemos coordinar una reunión de seguimiento con el tutor asignado."},
+    {t:"Reforzamiento académico",d:"Disponemos de sesiones de apoyo en las asignaturas que lo requieran, coordinadas con los docentes."},
+    {t:"Plan de Apoyo Académico (PAA)",d:"Para los casos que lo ameriten, activamos un plan formal de acompañamiento que incluye metas, plazos y seguimiento periódico."},
+    {t:"Ajuste de carga deportiva",d:"En coordinación con el área deportiva, podemos evaluar la distribución del tiempo entre entrenamiento y estudio."},
+    {t:"Canal de comunicación permanente",d:"Puede contactar a la Coordinación Académica en cualquier momento por correo o agenda directa con el equipo."},
+  ];
+  if(fechaReunion){const fR=new Date(fechaReunion+"T12:00").toLocaleDateString("es-CL",{weekday:"long",year:"numeric",month:"long",day:"numeric"});opciones.unshift({t:"Fecha propuesta para reunión",d:fR});}
+  const listaOpc=opciones.map(o=>`<w:p><w:pPr><w:spacing w:before="80" w:after="40"/></w:pPr>${wR("▸  ",{b:true,c:DORADO,s:22})}${wR(o.t+": ",{b:true,c:AZUL,s:22})}${wR(o.d,{s:22,c:"444444"})}</w:p>`).join("");
+
+  const sep=wP("",{be:40,af:40,bb:DORADO});
+  const tit=t=>wP(wR(t,{b:true,c:AZUL,s:26}),{be:280,af:120});
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" mc:Ignorable="">
+<w:body>
+${wP(wR("C·DAR",{b:true,c:"FFFFFF",s:40})+wR("  |  Colegio para Deportistas de Alto Rendimiento",{c:"AAB8D0",s:22}),{sh:AZUL,be:0,af:0,bb:DORADO})}
+${wP(wR("Carta de Seguimiento Académico",{b:true,c:DORADO,s:26})+wR("   ·   Coordinación Académica 2026",{c:"7A8FAA",s:18}),{sh:AZUL,be:0,af:200})}
+${sep}
+${wP(wR("Estimado/a "+(apod||"Apoderado/a")+":",{s:24,c:"1a2540"}),{be:240,af:100})}
+${wP(wR(saludo,{s:22,c:"444444"}),{af:80})}
+${wP(wR("En C·DAR creemos que el acompañamiento conjunto entre la familia y el colegio hace una gran diferencia. Le invitamos a leer esta información y a acercarse a nosotros ante cualquier consulta.",{s:22,c:"444444"}),{af:180})}
+${wP(wR("Estudiante:  ",{b:true,c:AZUL,s:23})+wR(caso.Apellidos+", "+caso.Nombre,{s:23,c:"111111"}),{be:60,af:50})}
+${wP(wR("Sección:  ",{b:true,c:AZUL,s:22})+wR(caso.Seccion||"—",{s:22,c:"333333"})+wR("     Fecha:  ",{b:true,c:AZUL,s:22})+wR(hoy,{s:22,c:"333333"}),{af:50})}
+${sep}
+${tit("Notas y evaluaciones")}
+${tblHorizontal}
+${sep}
+${obsIA?tit("Lo que nos dicen los docentes"):""}
+${obsIA?wP(wR(obsIA,{s:22,c:"333333",i:true}),{af:80}):""}
+${obsIA?sep:""}
+${tit("¿Qué le ofrecemos desde C·DAR?")}
+${listaOpc}
+${obsExtra?sep:""}
+${obsExtra?tit("Observaciones adicionales"):""}
+${obsExtra?wP(wR(obsExtra,{s:22,c:"444444"}),{af:80}):""}
+${sep}
+${wP(wR("La familia: el motor del rendimiento académico y deportivo",{b:true,c:AZUL,s:24}),{be:260,af:100})}
+${wP(wR("La investigación educativa y la experiencia de C·DAR confirman que los estudiantes que cuentan con el respaldo activo de su familia obtienen mejores resultados, tanto en el aula como en la cancha. El interés genuino de un apoderado —preguntar cómo le fue, revisar el cuaderno, asistir a las reuniones— es uno de los factores más poderosos para que un joven deportista logre el equilibrio entre sus metas académicas y su desarrollo atlético. Su presencia importa, y su apoyo marca la diferencia.",{s:22,c:"444444"}),{af:180})}
+${sep}
+${wP(wR(appConfig.nombreCoord||"Coordinación Académica",{b:true,c:AZUL,s:22}),{be:80,af:40})}
+${wP(wR("C·DAR — Colegio para Deportistas de Alto Rendimiento · 2026",{s:20,c:"888888"}),{af:0})}
+<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="900" w:right="800" w:bottom="1000" w:left="800"/></w:sectPr>
+</w:body></w:document>`;
+}
+
+async function buildDocxBlob(caso,apod,fecha,obs,obsIA,tipo){
+  const xmlContent=buildDocxXml(caso,apod,fecha,obs,obsIA,tipo);
+  const zip=new JSZip();
+  zip.file("[Content_Types].xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>');
+  zip.file("_rels/.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  zip.file("word/document.xml",xmlContent);
+  zip.file("word/_rels/document.xml.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>');
+  return await zip.generateAsync({type:"arraybuffer",mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+}
+
+async function procesarObsIA(caso,tipo){
+  const obs=caso.ObservacionesPorMateria||{};
+  const entradas=Object.entries(obs).filter(([,v])=>v&&String(v).trim());
+  if(!entradas.length)return null;
+  const listaObs=entradas.map(([mat,txt])=>'- '+mat+': "'+txt+'"').join("\n");
+  const prompt='Eres coordinador académico de C·DAR Chile. '+( tipo==="urgente"?"El estudiante tiene materias reprobadas.":"El estudiante tiene promedio por debajo de 5,0.")+' A continuación hay observaciones de docentes sobre '+caso.Apellidos+', '+caso.Nombre+':\n'+listaObs+'\n\nRedacta un párrafo breve (2-3 oraciones) para incluir en una carta formal al apoderado. Tono: positivo y constructivo, pedagógico pero cercano, destacando capacidades y oportunidades de mejora. No cites textualmente ni menciones docentes por nombre. Solo el párrafo, sin títulos.';
+  try{
+    const resp=await fetch(appConfig.proxyUrl||"/.netlify/functions/claude-proxy",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages:[{role:"user",content:prompt}]})});
+    const data=await resp.json();
+    return data?.content?.find(b=>b.type==="text")?.text?.trim()||null;
+  }catch(e){return null;}
+}
+
+async function generarCartaWord(){
+  const chips=[...document.querySelectorAll("#estSelector .est-chip.sel")];
+  if(!chips.length){mostrarToast("Selecciona al menos un estudiante");return;}
+  const apod=document.getElementById("inputApoderado").value.trim();
+  const fecha=document.getElementById("inputFecha").value;
+  const obs=document.getElementById("inputObs").value.trim();
+  const btn=document.getElementById("btnGenerar");
+  btn.textContent="⏳ Generando carta Word…";btn.disabled=true;
+  cartasGeneradas=[];
+  const resultados=await Promise.all(chips.map(async chip=>{
+    const k=chip.dataset.key;const c=casosRiesgo.find(x=>(x.Apellidos+"||"+x.Nombre)===k);if(!c)return null;
+    const obsIA=await procesarObsIA(c,modoInforme);
+    const buffer=await buildDocxBlob(c,apod,fecha,obs,obsIA,modoInforme);
+    return{c,buffer,obsIA};
+  }));
+  cartasGeneradas=resultados.filter(Boolean);
+  btn.textContent="⚙️ Generar carta Word";btn.disabled=false;
+  if(!cartasGeneradas.length)return;
+  // Vista previa resumen
+  const prev=cartasGeneradas.map(x=>{
+    const prom=esNota(x.c.Promedio)?x.c.Promedio.toFixed(1):"—";
+    const notas=Object.entries(x.c.NotasMat).filter(([,v])=>esNota(v)).map(([m,n])=>m+": "+n.toFixed(1)).join("  ·  ");
+    return x.c.Apellidos+", "+x.c.Nombre+"\nPromedio: "+prom+"  |  "+notas+(x.obsIA?"\n\nDocentes: "+x.obsIA:"");
+  }).join("\n\n──────────────────────────────────\n\n");
+  document.getElementById("informe-titulo-head").textContent=cartasGeneradas.length===1?cartasGeneradas[0].c.Apellidos+", "+cartasGeneradas[0].c.Nombre:cartasGeneradas.length+" cartas generadas";
+  document.getElementById("informeContent").textContent="✅ Carta"+( cartasGeneradas.length>1?"s":"")+" Word lista"+( cartasGeneradas.length>1?"s":"")+". Haz clic en Descargar Word.\n\nResumen:\n\n"+prev;
+  document.getElementById("paso-selector").style.display="none";document.getElementById("paso-preview").style.display="block";
+  document.getElementById("btnDescargarWord").style.display="inline-block";
+  mostrarToast("✅ "+(cartasGeneradas.length>1?cartasGeneradas.length+" cartas listas":"Carta lista")+" — haz clic en Descargar Word");
+}
+
+async function descargarCartasWord(){
+  if(!cartasGeneradas.length)return;
+  for(const x of cartasGeneradas){
+    const nombre="Carta_"+x.c.Apellidos.replace(/\s/g,"_")+"_"+x.c.Nombre.replace(/\s/g,"_")+".docx";
+    const blob=new Blob([x.buffer],{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+    const a=Object.assign(document.createElement("a"),{href:URL.createObjectURL(blob),download:nombre});
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    await new Promise(r=>setTimeout(r,400));
+  }
+  mostrarToast("📄 "+cartasGeneradas.length+" Word"+(cartasGeneradas.length>1?"s":"")+" descargado"+(cartasGeneradas.length>1?"s":""));
+}
+
+
+// ─── CONFIG & STORAGE ────────────────────────────────────────────────────────
+let appConfig = {
+  proxyUrl: '/.netlify/functions/claude-proxy',
+  nombreCoord: 'Coordinación Académica',
+  notaMin: 4.0,
+  promPrec: 5.0
+};
+
+function cargarConfig(){
+  try{
+    const saved = localStorage.getItem('cdar_config_v2');
+    if(saved) appConfig = {...appConfig, ...JSON.parse(saved)};
+  }catch(e){}
+  document.getElementById('cfgProxyUrl').value = appConfig.proxyUrl;
+  document.getElementById('cfgNombreCoord').value = appConfig.nombreCoord;
+  document.getElementById('cfgNotaMin').value = appConfig.notaMin;
+  document.getElementById('cfgPromPrec').value = appConfig.promPrec;
+  NOTA_MIN = appConfig.notaMin;
+  PROM_PRECAUCION = appConfig.promPrec;
+}
+
+function guardarConfig(){
+  appConfig.proxyUrl = document.getElementById('cfgProxyUrl').value.trim() || '/.netlify/functions/claude-proxy';
+  appConfig.nombreCoord = document.getElementById('cfgNombreCoord').value.trim() || 'Coordinación Académica';
+  appConfig.notaMin = parseFloat(document.getElementById('cfgNotaMin').value) || 4.0;
+  appConfig.promPrec = parseFloat(document.getElementById('cfgPromPrec').value) || 5.0;
+  NOTA_MIN = appConfig.notaMin;
+  PROM_PRECAUCION = appConfig.promPrec;
+  try{ localStorage.setItem('cdar_config_v2', JSON.stringify(appConfig)); }catch(e){}
+  mostrarToast('✅ Configuración guardada');
+}
+
+// ─── SESSION MANAGEMENT ──────────────────────────────────────────────────────
+let sessions = {};
+let activeSession = null;
+
+function cargarSessions(){
+  try{
+    const s = localStorage.getItem('cdar_sessions_v2');
+    if(s) sessions = JSON.parse(s);
+  }catch(e){ sessions = {}; }
+  renderSessionBar();
+}
+
+function guardarSession(){
+  if(!activeSession) return;
+  // Serialize current unit data (file names and parsed data)
+  const snapshot = {};
+  for(let u=1;u<=N_UNIDADES;u++){
+    snapshot['unit_'+u] = {
+      fileNames: unitData[u].files.map(f=>f.name),
+      parsedData: unitData[u].parsedData,
+      allStudents: unitData[u].allStudents
+    };
+  }
+  sessions[activeSession] = {
+    name: activeSession,
+    updatedAt: new Date().toISOString(),
+    snapshot,
+    riesgoCount: casosRiesgo.length,
+    finalCount: finalData.length
+  };
+  try{ localStorage.setItem('cdar_sessions_v2', JSON.stringify(sessions)); }catch(e){}
+  renderSessionBar();
+}
+
+function renderSessionBar(){
+  const container = document.getElementById('session-bar-container');
+  if(!container) return;
+  const keys = Object.keys(sessions);
+  
+  let html = '<div class="session-bar"><span class="session-label">📁 Sesión activa:</span>';
+  if(keys.length === 0){
+    html += '<span style="font-size:.78rem;color:var(--muted)">Sin sesiones guardadas</span>';
+  } else {
+    keys.forEach(k=>{
+      const s = sessions[k];
+      const fecha = s.updatedAt ? new Date(s.updatedAt).toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'}) : '';
+      html += `<button class="session-slot ${activeSession===k?'active':''}" onclick="activarSession('${k}')">${k} <span style="opacity:.6;font-size:.7rem">${fecha}</span></button>`;
+    });
+  }
+  html += `<button class="session-new" onclick="nuevaSession()">+ Nueva</button>`;
+  if(activeSession) html += `<button class="session-clear" onclick="limpiarSession('${activeSession}')">Eliminar sesión</button>`;
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function nuevaSession(){
+  const nombre = prompt('Nombre de la sesión (ej: Unidad1_7B, Semestre1_2026):');
+  if(!nombre || !nombre.trim()) return;
+  const key = nombre.trim().replace(/\s+/g,'_');
+  if(!sessions[key]) sessions[key] = {name:key, updatedAt: new Date().toISOString(), snapshot:{}, riesgoCount:0, finalCount:0};
+  activeSession = key;
+  try{ localStorage.setItem('cdar_sessions_v2', JSON.stringify(sessions)); }catch(e){}
+  renderSessionBar();
+  mostrarToast('✅ Sesión "'+key+'" activa');
+}
+
+function activarSession(key){
+  activeSession = key;
+  renderSessionBar();
+  // Restore snapshot data (parsed data only, files need to be re-uploaded)
+  const snap = sessions[key]?.snapshot || {};
+  for(let u=1;u<=N_UNIDADES;u++){
+    const usnap = snap['unit_'+u];
+    if(usnap){
+      unitData[u].parsedData = usnap.parsedData || {};
+      unitData[u].allStudents = usnap.allStudents || [];
+    }
+  }
+  // Re-render dashboard
+  actualizarDashboard();
+  mostrarToast('📁 Sesión "'+key+'" cargada');
+}
+
+function limpiarSession(key){
+  if(!confirm('¿Eliminar la sesión "'+key+'"? Se borrarán los datos guardados de esa sesión.')) return;
+  delete sessions[key];
+  if(activeSession === key) activeSession = null;
+  try{ localStorage.setItem('cdar_sessions_v2', JSON.stringify(sessions)); }catch(e){}
+  renderSessionBar();
+  mostrarToast('🗑 Sesión eliminada');
+}
+
+// ─── DASHBOARD ───────────────────────────────────────────────────────────────
+function actualizarDashboard(){
+  // Collect all students from all units
+  let allStudents = [];
+  let unidadesConDatos = 0;
+  let materiasSet = new Set();
+  
+  for(let u=1;u<=N_UNIDADES;u++){
+    const pd = unitData[u].parsedData;
+    const mats = Object.keys(pd);
+    if(mats.length > 0){
+      unidadesConDatos++;
+      mats.forEach(m => materiasSet.add(m));
+      // Merge students
+      const estudiantesMap = {};
+      for(const [mat, data] of Object.entries(pd)){
+        (data.alumnos||[]).forEach(al=>{
+          const k = keyAl(al);
+          if(!estudiantesMap[k]) estudiantesMap[k] = {...al, notasPorMat:{}, reprobadas:0, aprobadas:0};
+          // Find promedio column
+          const notaCols = Object.keys(al).filter(c=>c!=='Apellidos'&&c!=='Nombre'&&c!=='Num'&&c!=='Seccion'&&c!=='Observaciones');
+          const promKey = notaCols.find(c=>c.toLowerCase().includes('promedio'));
+          if(promKey && esNota(al[promKey])){
+            estudiantesMap[k].notasPorMat[mat] = al[promKey];
+          }
+        });
+      }
+      allStudents = [...allStudents, ...Object.values(estudiantesMap)];
+    }
+  }
+  
+  // Deduplicate by keyAl
+  const deduped = {};
+  allStudents.forEach(al=>{
+    const k = keyAl(al);
+    if(!deduped[k]) deduped[k] = {...al};
+    else {
+      // Merge notasPorMat
+      deduped[k].notasPorMat = {...(deduped[k].notasPorMat||{}), ...(al.notasPorMat||{})};
+    }
+  });
+  
+  const estudiantes = Object.values(deduped);
+  const notaMinRT = NOTA_MIN;
+  const promPrecRT = PROM_PRECAUCION;
+  
+  // Calc stats
+  const total = estudiantes.length;
+  let criticos=0, riesgo=0, precaucion=0, ok=0;
+  const matStats = {};
+  
+  estudiantes.forEach(al=>{
+    const notas = Object.values(al.notasPorMat||{}).filter(n=>esNota(n));
+    const repro = Object.entries(al.notasPorMat||{}).filter(([,n])=>esNota(n)&&n<notaMinRT).length;
+    const prom = notas.length ? notas.reduce((s,n)=>s+n,0)/notas.length : null;
+    
+    if(repro >= 2) criticos++;
+    else if(repro >= 1) riesgo++;
+    else if(prom !== null && prom < promPrecRT) precaucion++;
+    else ok++;
+    
+    // Per-materia stats
+    Object.entries(al.notasPorMat||{}).forEach(([mat, nota])=>{
+      if(!matStats[mat]) matStats[mat]={apro:0,repro:0,total:0};
+      matStats[mat].total++;
+      if(esNota(nota)){
+        if(nota >= notaMinRT) matStats[mat].apro++;
+        else matStats[mat].repro++;
+      }
+    });
+  });
+  
+  // Secciones
+  const secciones = [...new Set(estudiantes.map(a=>a.Seccion).filter(Boolean))].sort();
+  
+  // Update dashboard numbers
+  const setEl = (id, val) => { const el=document.getElementById(id); if(el) el.textContent=val; };
+  setEl('d-total', total || '—');
+  setEl('d-criticos', criticos || (total?'0':'—'));
+  setEl('d-riesgo', riesgo || (total?'0':'—'));
+  setEl('d-precaucion', precaucion || (total?'0':'—'));
+  setEl('d-ok', ok || (total?'0':'—'));
+  setEl('d-unidades', unidadesConDatos || '—');
+  setEl('d-secciones', secciones.length ? secciones.slice(0,6).join(' · ') + (secciones.length>6?'…':'') : '—');
+  setEl('d-mats', [...materiasSet].join(' · ') || '—');
+  
+  // Materia breakdown
+  const matDiv = document.getElementById('dash-materias');
+  if(matDiv && Object.keys(matStats).length){
+    matDiv.innerHTML = Object.entries(matStats).map(([mat, s])=>{
+      const pct = s.total ? Math.round((s.apro/s.total)*100) : 0;
+      const barCls = pct>=70?'progress-green':pct>=50?'progress-amber':'progress-red';
+      const css = MAT_CSS[mat]||'m-xx';
+      return `<div style="margin-bottom:.7rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+          <span class="badge-mat ${css}" style="font-size:.78rem">${mat}</span>
+          <span style="font-size:.75rem;color:var(--muted)">${s.apro}/${s.total} aprobados (${pct}%)</span>
+        </div>
+        <div class="progress-bar-wrap"><div class="progress-bar ${barCls}" style="width:${pct}%"></div></div>
+      </div>`;
+    }).join('');
+  } else if(matDiv){
+    matDiv.innerHTML = '<p style="color:var(--muted);font-size:.85rem">Carga archivos en las Unidades para ver estadísticas.</p>';
+  }
+}
+
+// ─── FILTER BY SECCIÓN ───────────────────────────────────────────────────────
+let filtroSeccionRiesgo = '';
+let filtroSeccionFinal = '';
+
+function getSeccionesRiesgo(){
+  return [...new Set(casosRiesgo.map(c=>c.Seccion).filter(Boolean))].sort();
+}
+
+
+function setFiltroSeccion(scope, seccion, btn){
+  if(scope==='riesgo'){
+    filtroSeccionRiesgo = seccion;
+    const activoTipo=document.querySelector('#f-crit.on,#f-warn.on-warn');
+    const tipo=activoTipo?.id==='f-crit'?'crit':activoTipo?.id==='f-warn'?'warn':'all';
+    filtrarRiesgo(tipo,null);
+    document.querySelectorAll('.filtro-seccion').forEach(b=>{
+      b.classList.remove('on-all');
+    });
+    btn.classList.add('on-all');
+  } else {
+    filtroSeccionFinal = seccion;
+    filtrarFinal('all', null);
+  }
+}
+
+// (filtrarRiesgo already patched above with section filter)
+
+// (renderStats patched inline)
+
+// (generarUnidad patched inline)
+
+
+// ─── OBS COORDINADOR ─────────────────────────────────────────────────────────
+let _obsCache=null;
+function _getObsCache(){if(!_obsCache){try{_obsCache=JSON.parse(localStorage.getItem('cdar_obs_v2')||'{}');}catch(e){_obsCache={};}}return _obsCache;}
+function getObsCoord(key){return _getObsCache()[key]||'';}
+function guardarObsCoord(el,key){
+  const d=_getObsCache();d[key]=el.value.trim();
+  try{localStorage.setItem('cdar_obs_v2',JSON.stringify(d));}catch(e){}
+  mostrarToast('💾 Observación guardada');
+}
+
+// ─── INIT ADDITIONS ─────────────────────────────────────────────────────────
+function initV2(){
+  cargarConfig();
+  cargarSessions();
+  actualizarDashboard();
+  cargarCitaciones();
+  // First active tab = dashboard
+  document.querySelector('.page-tab.active')?.classList.remove('active');
+  document.querySelector('[onclick*=\'dashboard\']')?.classList.add('active');
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CITACIONES A APODERADOS — v3.0
+// ═══════════════════════════════════════════════════════════════════════════
+let citacionesData = []; // [{id, Apellidos, Nombre, Seccion, Nivel, Promedio, MatReprobadas,
+                         //   NombreApoderado, Parentesco, Telefono, Correo,
+                         //   FechaCitacion, Hora, Modalidad, Estado, Compromisos, Observaciones}]
+let citFiltro = 'all';
+let citBusq = '';
+
+const CIT_KEY = 'cdar_citaciones_v3';
+
+function cargarCitaciones() {
+  try {
+    const raw = localStorage.getItem(CIT_KEY);
+    if (raw) citacionesData = JSON.parse(raw);
+  } catch(e) { citacionesData = []; }
+  renderCitaciones();
+  actualizarStatsCitaciones();
+}
+
+function guardarCitaciones() {
+  try { localStorage.setItem(CIT_KEY, JSON.stringify(citacionesData)); } catch(e) {}
+  const dot = document.getElementById('cit-saved-indicator');
+  const dot2 = document.getElementById('cit-badge-dot');
+  if(dot) { dot.classList.add('show'); setTimeout(()=>dot.classList.remove('show'),1500); }
+  if(dot2) { dot2.classList.add('show'); setTimeout(()=>dot2.classList.remove('show'),1500); }
+  actualizarStatsCitaciones();
+}
+
+// Sincronizar desde Consolidador de Riesgo
+function sincronizarCitacionesDesdeRiesgo() {
+  if (!casosRiesgo.length) return;
+  let agregados = 0;
+  casosRiesgo.forEach(c => {
+    const id = c.Apellidos + '||' + c.Nombre + '||' + (c.Seccion||'');
+    if (!citacionesData.find(x => x.id === id)) {
+      const matsStr = (c.MatRepro||[]).map(m=>m.mat+': '+m.nota.toFixed(1)).join(', ');
+      citacionesData.push({
+        id,
+        Apellidos: c.Apellidos,
+        Nombre: c.Nombre,
+        Seccion: c.Seccion||'',
+        Nivel: c.Nivel,
+        Promedio: typeof c.Promedio === 'number' ? c.Promedio.toFixed(1) : '—',
+        MatReprobadas: matsStr,
+        NombreApoderado:'', Parentesco:'', Telefono:'', Correo:'',
+        FechaCitacion:'', Hora:'', Modalidad:'Presencial', Estado:'Pendiente',
+        Compromisos:'', Observaciones:''
+      });
+      agregados++;
+    }
+  });
+  if (agregados > 0) {
+    guardarCitaciones();
+    renderCitaciones();
+    // Mostrar alerta
+    const banner = document.getElementById('cit-alerta-banner');
+    const txt = document.getElementById('cit-alerta-txt');
+    if(banner && txt) {
+      txt.textContent = agregados + ' estudiante' + (agregados>1?'s':'') + ' en riesgo agregado' + (agregados>1?'s':'') + ' a Citaciones';
+      banner.classList.add('show');
+      setTimeout(()=>banner.classList.remove('show'), 8000);
+    }
+    mostrarToast('📋 ' + agregados + ' estudiante' + (agregados>1?'s':'') + ' agregado' + (agregados>1?'s':'') + ' a Citaciones');
+  }
+}
+
+function agregarFilaCitacion() {
+  const id = 'manual_' + Date.now();
+  citacionesData.push({
+    id, Apellidos:'(Apellidos)', Nombre:'(Nombre)', Seccion:'', Nivel:'warn',
+    Promedio:'', MatReprobadas:'',
+    NombreApoderado:'', Parentesco:'', Telefono:'', Correo:'',
+    FechaCitacion:'', Hora:'', Modalidad:'Presencial', Estado:'Pendiente',
+    Compromisos:'', Observaciones:''
+  });
+  guardarCitaciones();
+  renderCitaciones();
+}
+
+function actualizarCampoCit(id, campo, valor) {
+  const row = citacionesData.find(x => x.id === id);
+  if(row) {
+    row[campo] = valor;
+    guardarCitaciones();
+    if(campo === 'Estado') actualizarColorFila(id, valor);
+  }
+}
+
+function actualizarColorFila(id, estado) {
+  const tr = document.querySelector('[data-cit-id="'+id+'"]');
+  if(!tr) return;
+  tr.querySelectorAll('td.cit-estado-cell').forEach(cell => {
+    const sel = cell.querySelector('.cit-select');
+    if(!sel) return;
+    // Visual feedback on the row is done via the select bg
+  });
+}
+
+function eliminarCitacion(id) {
+  citacionesData = citacionesData.filter(x => x.id !== id);
+  guardarCitaciones();
+  renderCitaciones();
+}
+
+function filtrarCitaciones(tipo, btn) {
+  if(btn) {
+    document.querySelectorAll('.cit-filtros .filtro-btn').forEach(b=>{b.className='filtro-btn';});
+    if(tipo==='all') btn.className='filtro-btn on-all';
+    else if(tipo==='crit') btn.className='filtro-btn on';
+    else if(tipo==='pendiente'||tipo==='realizada') btn.className='filtro-btn on-all';
+    else btn.className='filtro-btn on-warn';
+  }
+  if(tipo !== 'search') citFiltro = tipo;
+  citBusq = normStr(document.getElementById('cit-buscar').value||'');
+  renderCitaciones();
+}
+
+function getCitacionesFiltradas() {
+  let arr = [...citacionesData];
+  if(citFiltro === 'crit') arr = arr.filter(x=>x.Nivel==='crit');
+  else if(citFiltro === 'warn') arr = arr.filter(x=>x.Nivel==='warn');
+  else if(citFiltro === 'pendiente') arr = arr.filter(x=>x.Estado==='Pendiente');
+  else if(citFiltro === 'realizada') arr = arr.filter(x=>x.Estado==='Realizada');
+  if(citBusq) arr = arr.filter(x=>normStr(x.Apellidos).includes(citBusq)||normStr(x.Nombre).includes(citBusq));
+  return arr;
+}
+
+function estadoCitBadge(e) {
+  const map = {
+    'Pendiente':'ec-pendiente', 'Realizada':'ec-realizada',
+    'No concurrió':'ec-noconcurrio', 'Reagendada':'ec-reagendada'
+  };
+  return '<span class="estado-cit ' + (map[e]||'ec-pendiente') + '">' + (e||'Pendiente') + '</span>';
+}
+
+function nivelBadge(nivel) {
+  if(nivel==='crit') return '<span class="cit-badge-nivel nivel-crit">🔴 Crítico</span>';
+  if(nivel==='warn') return '<span class="cit-badge-nivel nivel-warn">🟡 En riesgo</span>';
+  return '<span class="cit-badge-nivel" style="background:var(--off);color:var(--muted)">Manual</span>';
+}
+
+function renderCitaciones() {
+  const tbody = document.getElementById('cit-tbody');
+  const emptyMsg = document.getElementById('cit-empty-msg');
+  const wrap = document.getElementById('cit-table-wrap');
+  const countEl = document.getElementById('cit-count');
+  if (!tbody) return;
+
+  const filtered = getCitacionesFiltradas();
+  const total = citacionesData.length;
+
+  if(total === 0) {
+    emptyMsg.style.display = 'block';
+    wrap.style.display = 'none';
+    if(countEl) countEl.textContent = '';
+    return;
+  }
+  emptyMsg.style.display = 'none';
+  wrap.style.display = 'block';
+
+  tbody.innerHTML = filtered.map((row, i) => {
+    const id = row.id;
+    const trCls = row.Nivel==='crit'?'cit-crit':(row.Nivel==='warn'?'cit-warn':'');
+    const esc = s => String(s||'').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+
+    const estadoSel = ['Pendiente','Realizada','No concurrió','Reagendada'].map(e=>
+      `<option value="${e}" ${row.Estado===e?'selected':''}>${e}</option>`).join('');
+    const modSel = ['Presencial','Virtual','Telefónica'].map(m=>
+      `<option value="${m}" ${row.Modalidad===m?'selected':''}>${m}</option>`).join('');
+
+    return `<tr class="${trCls}" data-cit-id="${id}">
+      <td style="color:var(--muted);font-size:.72rem;text-align:center">${i+1}</td>
+      <td><strong style="color:var(--navy)">${esc(row.Apellidos)}</strong></td>
+      <td style="color:var(--muted)">${esc(row.Nombre)}</td>
+      <td><span class="badge-seccion">${esc(row.Seccion)||'—'}</span></td>
+      <td>${nivelBadge(row.Nivel)}</td>
+      <td><span class="nota ${notaClass(parseFloat(row.Promedio))}">${esc(row.Promedio)||'—'}</span></td>
+      <td style="font-size:.72rem;color:var(--muted);max-width:160px;white-space:normal;line-height:1.4">${esc(row.MatReprobadas)||'—'}</td>
+      <td><input class="cit-input" value="${esc(row.NombreApoderado)}" placeholder="Nombre…" onchange="actualizarCampoCit('${id}','NombreApoderado',this.value)"/></td>
+      <td><input class="cit-input" value="${esc(row.Parentesco)}" placeholder="Madre/Padre…" onchange="actualizarCampoCit('${id}','Parentesco',this.value)" style="min-width:80px"/></td>
+      <td><input class="cit-input" type="tel" value="${esc(row.Telefono)}" placeholder="+56 9…" onchange="actualizarCampoCit('${id}','Telefono',this.value)"/></td>
+      <td><input class="cit-input" type="email" value="${esc(row.Correo)}" placeholder="correo@…" onchange="actualizarCampoCit('${id}','Correo',this.value)" style="min-width:130px"/></td>
+      <td><input class="cit-input" type="date" value="${esc(row.FechaCitacion)}" onchange="actualizarCampoCit('${id}','FechaCitacion',this.value)"/></td>
+      <td><input class="cit-input" type="time" value="${esc(row.Hora)}" onchange="actualizarCampoCit('${id}','Hora',this.value)" style="min-width:70px"/></td>
+      <td><select class="cit-select" onchange="actualizarCampoCit('${id}','Modalidad',this.value)">${modSel}</select></td>
+      <td class="cit-estado-cell">
+        <select class="cit-select" onchange="actualizarCampoCit('${id}','Estado',this.value);this.closest('tr').className='${trCls}'">${estadoSel}</select>
+      </td>
+      <td><textarea class="cit-textarea" rows="2" placeholder="Compromisos adquiridos…" onchange="actualizarCampoCit('${id}','Compromisos',this.value)">${esc(row.Compromisos)}</textarea></td>
+      <td>
+        <textarea class="cit-textarea" rows="2" placeholder="Observaciones…" onchange="actualizarCampoCit('${id}','Observaciones',this.value)">${esc(row.Observaciones)}</textarea>
+        <button onclick="eliminarCitacion('${id}')" style="margin-top:3px;font-size:.68rem;background:none;border:none;color:var(--red);cursor:pointer;text-decoration:underline">Eliminar</button>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="17" style="text-align:center;padding:1.5rem;color:var(--muted)">Sin resultados con los filtros aplicados.</td></tr>';
+
+  if(countEl) countEl.textContent = 'Mostrando ' + filtered.length + ' de ' + total + ' citaciones';
+}
+
+function actualizarStatsCitaciones() {
+  const total = citacionesData.length;
+  const pendiente = citacionesData.filter(x=>x.Estado==='Pendiente').length;
+  const realizada = citacionesData.filter(x=>x.Estado==='Realizada').length;
+  const noc = citacionesData.filter(x=>x.Estado==='No concurrió').length;
+  const reagendada = citacionesData.filter(x=>x.Estado==='Reagendada').length;
+  const crit = citacionesData.filter(x=>x.Nivel==='crit').length;
+  const setEl=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  setEl('cit-s-total',total);setEl('cit-s-pendiente',pendiente);setEl('cit-s-realizada',realizada);
+  setEl('cit-s-noc',noc);setEl('cit-s-reagendada',reagendada);setEl('cit-s-crit',crit);
+}
+
+function exportarCitacionesExcel() {
+  if (!citacionesData.length) { mostrarToast('Sin datos para exportar'); return; }
+  const wb = XLSX.utils.book_new();
+  const hdr = ['N°','Apellidos','Nombre','Sección','Nivel Riesgo','Prom. Gral.','Mat. Reprobadas',
+    'Nombre Apoderado','Parentesco','Teléfono','Correo Electrónico',
+    'Fecha Citación','Hora','Modalidad','Estado','Compromisos Adquiridos','Observaciones'];
+  const rows = citacionesData.map((r,i)=>[
+    i+1, r.Apellidos, r.Nombre, r.Seccion,
+    r.Nivel==='crit'?'🔴 CRÍTICO':r.Nivel==='warn'?'🟡 EN RIESGO':'Manual',
+    r.Promedio, r.MatReprobadas,
+    r.NombreApoderado, r.Parentesco, r.Telefono, r.Correo,
+    r.FechaCitacion, r.Hora, r.Modalidad, r.Estado, r.Compromisos, r.Observaciones
+  ]);
+  // Título header rows
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['C·DAR — REGISTRO DE CITACIONES A APODERADOS — CASOS EN RIESGO ACADÉMICO 2026'],
+    ['Coordinación Académica  |  Uso interno — Confidencial'],
+    [],
+    hdr,
+    ...rows
+  ]);
+  ws['!cols'] = [4,22,18,9,13,8,30,22,12,14,24,12,8,12,14,30,30].map(w=>({wch:w}));
+  ws['!merges'] = [{s:{r:0,c:0},e:{r:0,c:16}},{s:{r:1,c:0},e:{r:1,c:16}}];
+  XLSX.utils.book_append_sheet(wb, ws, '📋 Citaciones Apoderados');
+  XLSX.writeFile(wb, 'Citaciones_Apoderados_CDAR_' + Date.now() + '.xlsx');
+  mostrarToast('📥 Excel de citaciones descargado');
+}
+
+function limpiarCitaciones() {
+  if(!citacionesData.length) return;
+  if(!confirm('¿Eliminar todos los registros de citaciones? Esta acción no se puede deshacer.')) return;
+  citacionesData = [];
+  guardarCitaciones();
+  renderCitaciones();
+  mostrarToast('🗑 Registros eliminados');
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+buildUnidades();
+initV2();
