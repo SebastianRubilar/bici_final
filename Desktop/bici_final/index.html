@@ -963,7 +963,7 @@ function saveBrevet() {
 
   const controls = ctrlRaw.split('\n').filter(l=>l.trim()).map(l => {
     const parts = l.split(',');
-    return { name: parts[0]?.trim() || '', km: parseFloat(parts[1]) || 0, done: false };
+    return { name: (parts[0] ? parts[0].trim() : '') || '', km: parseFloat(parts[1]) || 0, done: false };
   });
 
   const list = getBrevets();
@@ -1328,7 +1328,7 @@ function renderPF(w) {
   let grid = '';
   Object.entries(plan.sessions).forEach(([k, s]) => {
     const key = `w${w}_${k}`;
-    const done = log[key]?.done;
+    const done = log[key] != null ? log[key].done : undefined;
     grid += `<div class="gym-card${done?' done':''}" onclick="openGymDetail(${w},'${k}')">
       <div class="gym-tag">Gym ${k}</div>
       <div class="gym-name">${s.name}</div>
@@ -1700,7 +1700,8 @@ document.addEventListener('DOMContentLoaded',()=>{
         useDirectAPI = true;
         stravaToken = _s.access_token || _s.refresh_token;
       }
-      if (document.getElementById('panel-strava')?.classList.contains('active')) loadStravaActivities();
+      const _stravaPanel = document.getElementById('panel-strava');
+      if (_stravaPanel && _stravaPanel.classList.contains('active')) loadStravaActivities();
     });
   }
 });
@@ -1723,7 +1724,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
   document.getElementById('install-banner').style.display = 'flex';
 });
 
-document.getElementById('install-btn')?.addEventListener('click', async () => {
+const _installBtn = document.getElementById('install-btn');
+if (_installBtn) _installBtn.addEventListener('click', async () => {
   if (!deferredPrompt) return;
   deferredPrompt.prompt();
   const { outcome } = await deferredPrompt.userChoice;
@@ -1731,7 +1733,8 @@ document.getElementById('install-btn')?.addEventListener('click', async () => {
   document.getElementById('install-banner').style.display = 'none';
 });
 
-document.getElementById('install-dismiss')?.addEventListener('click', () => {
+const _dismissBtn = document.getElementById('install-dismiss');
+if (_dismissBtn) _dismissBtn.addEventListener('click', () => {
   document.getElementById('install-banner').style.display = 'none';
 });
 </script>
